@@ -669,10 +669,8 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
                 val body = JSONObject()
                     .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", sys))))
                     .put("contents", contents)
-                    .put("generationConfig", JSONObject()
-                        .put("responseMimeType", "application/json")
-                        .put("temperature", 0.7)
-                        .put("thinkingConfig", JSONObject().put("thinkingBudget", 0)))
+                                        .put("generationConfig", JSONObject()
+                        .put("responseMimeType", "application/json"))
 
                 val url = URL("https://generativelanguage.googleapis.com/v1beta/models/$MODEL:generateContent")
                 val conn = url.openConnection() as HttpURLConnection
