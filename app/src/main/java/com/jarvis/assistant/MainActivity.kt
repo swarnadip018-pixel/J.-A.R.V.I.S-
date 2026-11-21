@@ -16,6 +16,7 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -51,6 +52,8 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
     private lateinit var scrim: View
     private var recognizer: SpeechRecognizer? = null
     private val history = ArrayList<Pair<String, String>>()
+    private var chatMode = false
+    private var silent = 0
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
     private fun prefs() = getSharedPreferences("jarvis", Context.MODE_PRIVATE)
@@ -86,10 +89,18 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
         hud = HudView(this)
         val hudLp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         hudLp.setMargins(dp(60), dp(24), dp(60), 0)
-        hud.setOnClickListener { micTap() }
+        hud.setOnClickListener {
+            if (chatMode) {
+                stopChat("কথোপকথন বন্ধ। আবার শুরু করতে গোলকে চাপুন।")
+            } else {
+                chatMode = true
+                silent = 0
+                micTap()
+            }
+        }
 
         status = TextView(this)
-        status.text = "মাঝের গোলকে চেপে কথা বলুন"
+        status.text = "গোলকে একবার চাপুন, তারপর স্বাভাবিকভাবে কথা বলুন। বন্ধ করতে আবার চাপুন।"
         status.textSize = 16f
         status.setTextColor(Color.WHITE)
         status.gravity = Gravity.CENTER
@@ -165,7 +176,7 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
         item("ℹ️", "অ্যাপ সম্পর্কে") {
             AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                 .setTitle("J.A.R.V.I.S")
-                .setMessage("আপনার ব্যক্তিগত সহকারী\nসংস্করণ 2.0 (AI যুক্ত)")
+                .setMessage("আপনার ব্যক্তিগত সহকারী\nসংস্করণ 2.1 (হ্যান্ডস-ফ্রি কথোপকথন)")
                 .setPositiveButton("ঠিক আছে", null).show()
         }
     }
@@ -254,11 +265,43 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
             }.show()
     }
 
+    // ---------- কথোপকথন নিয়ন্ত্রণ ----------
+    private fun stopChat(msg: String) {
+        chatMode = false
+        tts.stop()
+        recognizer?.cancel()
+        hud.active = false
+        status.text = msg
+    }
+
+    override fun onPause() {
+        if (chatMode) stopChat("কথোপকথন বন্ধ। আবার শুরু করতে গোলকে চাপুন।")
+        super.onPause()
+    }
+
     // ---------- ভয়েস আউটপুট ----------
     override fun onInit(s: Int) {
         if (s == TextToSpeech.SUCCESS) {
             tts.setPitch(0.8f)
             tts.setSpeechRate(0.92f)
+            tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(id: String?) {
+                    runOnUiThread { hud.active = true }
+                }
+                override fun onDone(id: String?) {
+                    runOnUiThread { afterSpeech() }
+                }
+                override fun onError(id: String?) {
+                    runOnUiThread { afterSpeech() }
+                }
+            })
+        }
+    }
+
+    private fun afterSpeech() {
+        hud.active = false
+        if (chatMode) {
+            hud.postDelayed({ if (chatMode) listen() }, 500)
         }
     }
 
@@ -291,12 +334,17 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
 
     override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, res: IntArray) {
         super.onRequestPermissionsResult(code, perms, res)
-        if (res.isNotEmpty() && res[0] == PackageManager.PERMISSION_GRANTED) listen()
-        else status.text = "মাইকের অনুমতি ছাড়া শুনতে পারব না"
+        if (res.isNotEmpty() && res[0] == PackageManager.PERMISSION_GRANTED) {
+            listen()
+        } else {
+            chatMode = false
+            status.text = "মাইকের অনুমতি ছাড়া শুনতে পারব না"
+        }
     }
 
     private fun listen() {
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            chatMode = false
             status.text = "এই ফোনে ভয়েস চেনার সুবিধা নেই"
             return
         }
@@ -307,13 +355,28 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
             override fun onResults(r: Bundle?) {
                 val t = r?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
                 if (t == null) { hud.active = false; return }
+                silent = 0
                 askAi(t)
             }
             override fun onError(e: Int) {
                 hud.active = false
-                status.text = "বুঝতে পারিনি, আবার চেপে বলুন (কোড $e)"
+                val quiet = e == SpeechRecognizer.ERROR_NO_MATCH || e == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
+                if (chatMode && quiet) {
+                    silent++
+                    if (silent >= 3) {
+                        stopChat("অনেকক্ষণ কিছু শুনিনি, কথোপকথন বন্ধ করলাম। আবার শুরু করতে গোলকে চাপুন।")
+                    } else {
+                        hud.postDelayed({ if (chatMode) listen() }, 300)
+                    }
+                } else {
+                    chatMode = false
+                    status.text = "বুঝতে পারিনি, আবার গোলকে চেপে বলুন (কোড $e)"
+                }
             }
-            override fun onReadyForSpeech(p: Bundle?) { hud.active = true; status.text = "শুনছি…" }
+            override fun onReadyForSpeech(p: Bundle?) {
+                hud.active = true
+                status.text = if (chatMode) "শুনছি… (বন্ধ করতে গোলকে চাপুন)" else "শুনছি…"
+            }
             override fun onBeginningOfSpeech() {}
             override fun onRmsChanged(v: Float) {}
             override fun onBufferReceived(b: ByteArray?) {}
@@ -331,6 +394,7 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
     private fun askAi(userText: String) {
         val key = prefs().getString("key", "")?.trim().orEmpty()
         if (key.isEmpty()) {
+            chatMode = false
             hud.active = false
             status.text = "আপনি বললেন: $userText\n\nAI চালাতে আগে মেনু → API Key-তে Key বসান।"
             showKeyDialog()
@@ -389,15 +453,17 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
                     history.add(Pair("user", userText))
                     history.add(Pair("model", reply))
                     runOnUiThread {
-                        hud.active = false
                         status.text = "আপনি: $userText\n\n$reply"
                         if (!speakIn(lang, reply)) {
+                            hud.active = false
+                            chatMode = false
                             status.text = status.text.toString() + "\n\n(এই ভাষার ভয়েস ফোনে নেই। Settings → Text-to-speech → Google Speech Services থেকে ডাউনলোড করুন।)"
                         }
                     }
                 }
             } catch (e: Exception) {
                 runOnUiThread {
+                    chatMode = false
                     hud.active = false
                     status.text = "ইন্টারনেট বা সংযোগে সমস্যা। নেট চালু আছে কি না দেখুন।\n(${e.javaClass.simpleName})"
                 }
@@ -406,6 +472,7 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
     }
 
     private fun showHttpError(code: Int) {
+        chatMode = false
         hud.active = false
         status.text = when (code) {
             400, 403 -> "API Key ঠিক নয় বা অনুমতি নেই (কোড $code)। মেনু → API Key-তে আবার বসান।"
