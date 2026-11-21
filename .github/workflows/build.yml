@@ -3,6 +3,8 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -15,7 +17,28 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.9
-      - run: gradle assembleDebug --no-daemon
+      - name: Prepare signing key
+        env:
+          KS_PASS: ${{ secrets.JARVIS_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KS_PASS" ]; then echo "Secret JARVIS_KEY_PASSWORD is missing"; exit 1; fi
+          if [ -f signing/jarvis.keystore.enc ]; then
+            openssl enc -d -aes-256-cbc -pbkdf2 -in signing/jarvis.keystore.enc -out "$RUNNER_TEMP/jarvis.keystore" -pass env:KS_PASS
+          else
+            keytool -genkeypair -keystore "$RUNNER_TEMP/jarvis.keystore" -alias jarvis -keyalg RSA -keysize 2048 -validity 10000 -storepass "$KS_PASS" -keypass "$KS_PASS" -dname "CN=Jarvis"
+            mkdir -p signing
+            openssl enc -aes-256-cbc -pbkdf2 -salt -in "$RUNNER_TEMP/jarvis.keystore" -out signing/jarvis.keystore.enc -pass env:KS_PASS
+            git config user.name "github-actions"
+            git config user.email "actions@users.noreply.github.com"
+            git add signing/jarvis.keystore.enc
+            git commit -m "Add encrypted signing key"
+            git push
+          fi
+          echo "KS_FILE=$RUNNER_TEMP/jarvis.keystore" >> "$GITHUB_ENV"
+      - name: Build
+        env:
+          KS_PASS: ${{ secrets.JARVIS_KEY_PASSWORD }}
+        run: gradle assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
         with:
           name: jarvis-apk
