@@ -17,7 +17,9 @@ import java.util.Locale
 class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private lateinit var tts: TextToSpeech
     private lateinit var status: TextView
+    private lateinit var info: TextView
     private var recognizer: SpeechRecognizer? = null
+    private var ttsReady = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -29,8 +31,12 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         status = TextView(this)
         status.text = "বোতাম চেপে কথা বলুন"
         status.textSize = 20f
+        info = TextView(this)
+        info.textSize = 14f
+        info.setPadding(0, 32, 0, 0)
         layout.addView(btn)
         layout.addView(status)
+        layout.addView(info)
         setContentView(layout)
 
         tts = TextToSpeech(this, this)
@@ -44,7 +50,26 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     }
 
     override fun onInit(s: Int) {
-        if (s == TextToSpeech.SUCCESS) tts.language = Locale("bn", "BD")
+        if (s != TextToSpeech.SUCCESS) {
+            info.text = "ভয়েস ইঞ্জিন চালু হয়নি। Settings-এ Google Speech Services বেছে নিন।"
+            return
+        }
+        var r = tts.setLanguage(Locale("bn", "BD"))
+        if (r == TextToSpeech.LANG_MISSING_DATA || r == TextToSpeech.LANG_NOT_SUPPORTED) {
+            r = tts.setLanguage(Locale("bn", "IN"))
+        }
+        if (r == TextToSpeech.LANG_MISSING_DATA || r == TextToSpeech.LANG_NOT_SUPPORTED) {
+            info.text = "বাংলা ভয়েস পাওয়া যায়নি। Settings → Text-to-speech → Google Speech Services → Install voice data → Bengali।"
+            ttsReady = false
+        } else {
+            info.text = "ভয়েস প্রস্তুত ✅"
+            ttsReady = true
+        }
+    }
+
+    private fun say(text: String) {
+        if (!ttsReady) return
+        tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "u1")
     }
 
     override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, res: IntArray) {
@@ -64,7 +89,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             override fun onResults(r: Bundle?) {
                 val t = r?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: return
                 status.text = "আপনি বললেন: $t"
-                tts.speak("আপনি বললেন: $t", TextToSpeech.QUEUE_FLUSH, null, "u1")
+                say("আপনি বললেন: $t")
             }
             override fun onError(e: Int) { status.text = "বুঝতে পারিনি, আবার বলুন (কোড $e)" }
             override fun onReadyForSpeech(p: Bundle?) { status.text = "শুনছি…" }
