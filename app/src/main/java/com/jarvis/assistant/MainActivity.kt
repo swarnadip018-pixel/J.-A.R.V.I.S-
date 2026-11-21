@@ -6,9 +6,13 @@ import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.graphics.Matrix
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.media.ExifInterface
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
@@ -17,17 +21,21 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
@@ -36,7 +44,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private val BG = Color.parseColor("#050B12")
     private val CYAN = Color.parseColor("#00E5FF")
     private val SOFT = Color.parseColor("#7FDBE8")
+    private val PANEL = Color.parseColor("#0A1A24")
+    private val RED = Color.parseColor("#FF4D4D")
     private val MODEL = "gemini-2.5-flash"
+    private val PICK_PHOTO = 77
 
     private val SYS = """তুমি J.A.R.V.I.S, ব্যবহারকারীর ব্যক্তিগত ভয়েস সহকারী। শান্ত, ভদ্র ও সংক্ষিপ্তভাবে উত্তর দাও (সাধারণত ১-৩ বাক্য), কারণ উত্তরটা জোরে পড়ে শোনানো হবে।
 ব্যবহারকারী যে ভাষায় কথা বলেছে, ঠিক সেই ভাষাতেই উত্তর দাও।
@@ -50,6 +61,13 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
     private lateinit var hud: HudView
     private lateinit var drawer: LinearLayout
     private lateinit var scrim: View
+    private lateinit var profilePage: FrameLayout
+    private lateinit var photoView: ImageView
+    private lateinit var photoPlaceholder: TextView
+    private lateinit var fUser: EditText
+    private lateinit var fFull: EditText
+    private lateinit var fMail: EditText
+    private lateinit var fPhone: EditText
     private var recognizer: SpeechRecognizer? = null
     private val history = ArrayList<Pair<String, String>>()
     private var chatMode = false
@@ -57,11 +75,13 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
     private fun prefs() = getSharedPreferences("jarvis", Context.MODE_PRIVATE)
+    private fun photoFile() = File(filesDir, "profile.jpg")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.statusBarColor = BG
         window.navigationBarColor = BG
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
 
         val root = FrameLayout(this)
         root.setBackgroundColor(BG)
@@ -131,12 +151,12 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
         val ring = GradientDrawable()
         ring.shape = GradientDrawable.OVAL
         ring.setStroke(dp(2), CYAN)
-        ring.setColor(Color.parseColor("#0A1A24"))
+        ring.setColor(PANEL)
         profile.background = ring
         val pLp = FrameLayout.LayoutParams(dp(44), dp(44), Gravity.TOP or Gravity.END)
         pLp.topMargin = dp(42)
         pLp.rightMargin = dp(16)
-        profile.setOnClickListener { showProfile() }
+        profile.setOnClickListener { openProfile() }
         root.addView(profile, pLp)
 
         scrim = View(this)
@@ -152,6 +172,9 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
         drawer.translationX = -dp(290).toFloat()
         buildDrawer()
         root.addView(drawer, FrameLayout.LayoutParams(dp(280), ViewGroup.LayoutParams.MATCH_PARENT))
+
+        buildProfilePage()
+        root.addView(profilePage, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         setContentView(root)
         tts = TextToSpeech(this, this)
@@ -174,9 +197,9 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
             startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
         }
         item("ℹ️", "অ্যাপ সম্পর্কে") {
-            AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            darkDialog()
                 .setTitle("J.A.R.V.I.S")
-                .setMessage("আপনার ব্যক্তিগত সহকারী\nসংস্করণ 2.1 (হ্যান্ডস-ফ্রি কথোপকথন)")
+                .setMessage("আপনার ব্যক্তিগত সহকারী\nসংস্করণ 2.2 (প্রোফাইল পেজ ও শিরা-আলো)")
                 .setPositiveButton("ঠিক আছে", null).show()
         }
     }
@@ -204,30 +227,254 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
     }
 
     override fun onBackPressed() {
-        if (scrim.visibility == View.VISIBLE) closeDrawer() else super.onBackPressed()
+        when {
+            profilePage.visibility == View.VISIBLE -> closeProfile()
+            scrim.visibility == View.VISIBLE -> closeDrawer()
+            else -> super.onBackPressed()
+        }
     }
 
     private fun darkDialog() = AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
 
-    private fun showProfile() {
-        val box = LinearLayout(this)
-        box.orientation = LinearLayout.VERTICAL
-        box.setPadding(dp(24), dp(8), dp(24), 0)
-        val info = TextView(this)
-        info.text = "আপনার নাম লিখে রাখুন। জার্ভিস আপনাকে এই নামে ডাকবে।"
-        info.setTextColor(Color.WHITE)
-        val name = EditText(this)
-        name.setText(prefs().getString("name", ""))
-        name.hint = "আপনার নাম"
-        name.setTextColor(Color.WHITE)
-        name.setHintTextColor(Color.GRAY)
-        box.addView(info)
-        box.addView(name)
-        darkDialog().setTitle("👤 আমার তথ্য").setView(box)
-            .setPositiveButton("সেভ") { _, _ ->
-                prefs().edit().putString("name", name.text.toString().trim()).apply()
+    // ---------- প্রোফাইল পেজ ----------
+    private fun mono(t: TextView) { t.typeface = Typeface.MONOSPACE }
+
+    private fun field(parent: LinearLayout, label: String, hint: String, type: Int): EditText {
+        val l = TextView(this)
+        l.text = label
+        l.setTextColor(SOFT)
+        l.textSize = 11f
+        l.letterSpacing = 0.2f
+        mono(l)
+        l.setPadding(dp(4), dp(16), 0, dp(6))
+        val e = EditText(this)
+        e.hint = hint
+        e.inputType = type
+        e.setSingleLine(true)
+        e.setTextColor(Color.WHITE)
+        e.setHintTextColor(Color.parseColor("#4A6572"))
+        e.textSize = 16f
+        mono(e)
+        val bg = GradientDrawable()
+        bg.setColor(PANEL)
+        bg.setStroke(dp(1), CYAN)
+        bg.cornerRadius = dp(6).toFloat()
+        e.background = bg
+        e.setPadding(dp(14), dp(12), dp(14), dp(12))
+        parent.addView(l, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        parent.addView(e, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        return e
+    }
+
+    private fun boxButton(text: String, color: Int): TextView {
+        val b = TextView(this)
+        b.text = text
+        b.textSize = 15f
+        b.setTextColor(color)
+        b.gravity = Gravity.CENTER
+        b.letterSpacing = 0.2f
+        mono(b)
+        b.setPadding(dp(16), dp(14), dp(16), dp(14))
+        val bg = GradientDrawable()
+        bg.setColor(Color.parseColor("#08121A"))
+        bg.setStroke(dp(2), color)
+        bg.cornerRadius = dp(6).toFloat()
+        b.background = bg
+        return b
+    }
+
+    private fun buildProfilePage() {
+        profilePage = FrameLayout(this)
+        profilePage.setBackgroundColor(BG)
+        profilePage.isClickable = true
+        profilePage.visibility = View.GONE
+
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.gravity = Gravity.CENTER_HORIZONTAL
+        col.setPadding(dp(24), dp(96), dp(24), dp(120))
+
+        val tag = TextView(this)
+        tag.text = "> IDENTITY VERIFIED_"
+        tag.setTextColor(Color.parseColor("#39FF88"))
+        tag.textSize = 12f
+        mono(tag)
+        tag.setPadding(0, 0, 0, dp(16))
+        col.addView(tag)
+
+        val holder = FrameLayout(this)
+        val oval = GradientDrawable()
+        oval.shape = GradientDrawable.OVAL
+        oval.setColor(PANEL)
+        oval.setStroke(dp(3), CYAN)
+        holder.background = oval
+        holder.clipToOutline = true
+        photoPlaceholder = TextView(this)
+        photoPlaceholder.text = "👤"
+        photoPlaceholder.textSize = 64f
+        photoPlaceholder.gravity = Gravity.CENTER
+        photoView = ImageView(this)
+        photoView.scaleType = ImageView.ScaleType.CENTER_CROP
+        holder.addView(photoPlaceholder, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        holder.addView(photoView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        holder.setOnClickListener { pickPhoto() }
+        col.addView(holder, LinearLayout.LayoutParams(dp(150), dp(150)))
+
+        val change = TextView(this)
+        change.text = "[ ছবি বদলান ]"
+        change.setTextColor(CYAN)
+        change.textSize = 14f
+        mono(change)
+        change.setPadding(0, dp(12), 0, dp(4))
+        change.setOnClickListener { pickPhoto() }
+        col.addView(change)
+
+        fUser = field(col, "USERNAME", "username", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD)
+        fFull = field(col, "FULL NAME", "পুরো নাম", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS)
+        fMail = field(col, "GMAIL ID", "name@gmail.com", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS)
+        fPhone = field(col, "PHONE NUMBER", "+880...", InputType.TYPE_CLASS_PHONE)
+
+        val save = boxButton("SAVE", CYAN)
+        save.setOnClickListener { saveProfile(); toast("সেভ হয়েছে") }
+        val saveLp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        saveLp.topMargin = dp(24)
+        col.addView(save, saveLp)
+
+        val sv = ScrollView(this)
+        sv.isFillViewport = true
+        sv.addView(col)
+        profilePage.addView(sv, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
+        // ওপরের বার
+        val back = TextView(this)
+        back.text = "‹ BACK"
+        back.setTextColor(CYAN)
+        back.textSize = 16f
+        mono(back)
+        back.setPadding(dp(16), dp(10), dp(16), dp(10))
+        val bLp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START)
+        bLp.topMargin = dp(38)
+        back.setOnClickListener { closeProfile() }
+        profilePage.addView(back, bLp)
+
+        val head = TextView(this)
+        head.text = "// PROFILE"
+        head.setTextColor(CYAN)
+        head.textSize = 16f
+        head.letterSpacing = 0.2f
+        mono(head)
+        val hLp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END)
+        hLp.topMargin = dp(48)
+        hLp.rightMargin = dp(20)
+        profilePage.addView(head, hLp)
+
+        // সবার নিচে LOG OUT
+        val out = boxButton("⏻  LOG OUT", RED)
+        out.setOnClickListener { confirmLogout() }
+        val oLp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
+        oLp.setMargins(dp(24), 0, dp(24), dp(28))
+        profilePage.addView(out, oLp)
+    }
+
+    private fun loadProfileUi() {
+        val p = prefs()
+        fUser.setText(p.getString("username", ""))
+        fFull.setText(p.getString("fullname", ""))
+        fMail.setText(p.getString("email", ""))
+        fPhone.setText(p.getString("phone", ""))
+        val f = photoFile()
+        if (f.exists()) {
+            photoView.setImageBitmap(BitmapFactory.decodeFile(f.absolutePath))
+            photoPlaceholder.visibility = View.GONE
+        } else {
+            photoView.setImageDrawable(null)
+            photoPlaceholder.visibility = View.VISIBLE
+        }
+    }
+
+    private fun saveProfile() {
+        prefs().edit()
+            .putString("username", fUser.text.toString().trim())
+            .putString("fullname", fFull.text.toString().trim())
+            .putString("email", fMail.text.toString().trim())
+            .putString("phone", fPhone.text.toString().trim())
+            .apply()
+    }
+
+    private fun openProfile() {
+        loadProfileUi()
+        val w = resources.displayMetrics.widthPixels.toFloat()
+        profilePage.translationX = w
+        profilePage.visibility = View.VISIBLE
+        profilePage.animate().translationX(0f).setDuration(240).start()
+    }
+
+    private fun closeProfile() {
+        saveProfile()
+        val w = resources.displayMetrics.widthPixels.toFloat()
+        profilePage.animate().translationX(w).setDuration(220).withEndAction {
+            profilePage.visibility = View.GONE
+        }.start()
+    }
+
+    private fun confirmLogout() {
+        darkDialog()
+            .setTitle("LOG OUT")
+            .setMessage("আপনার প্রোফাইলের তথ্য ও ছবি এই ফোন থেকে মুছে যাবে। (API Key থাকবে।) নিশ্চিত?")
+            .setPositiveButton("হ্যাঁ, মুছুন") { _, _ ->
+                prefs().edit().remove("username").remove("fullname").remove("email").remove("phone").apply()
+                photoFile().delete()
+                history.clear()
+                loadProfileUi()
+                closeProfile()
+                toast("লগ আউট হয়েছে")
             }
-            .setNegativeButton("বন্ধ", null).show()
+            .setNegativeButton("না", null).show()
+    }
+
+    private fun pickPhoto() {
+        val i = Intent(Intent.ACTION_GET_CONTENT)
+        i.type = "image/*"
+        startActivityForResult(Intent.createChooser(i, "ছবি বাছুন"), PICK_PHOTO)
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(req: Int, res: Int, data: Intent?) {
+        super.onActivityResult(req, res, data)
+        if (req == PICK_PHOTO && res == RESULT_OK && data?.data != null) {
+            try {
+                savePhoto(data.data!!)
+                loadProfileUi()
+            } catch (e: Exception) {
+                toast("ছবিটা নেওয়া যায়নি")
+            }
+        }
+    }
+
+    private fun savePhoto(uri: Uri) {
+        val bounds = BitmapFactory.Options()
+        bounds.inJustDecodeBounds = true
+        contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        var s = 1
+        while (bounds.outWidth / s > 1024 || bounds.outHeight / s > 1024) s *= 2
+        val opts = BitmapFactory.Options()
+        opts.inSampleSize = s
+        var bmp = contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) } ?: return
+        val ori = contentResolver.openInputStream(uri)?.use {
+            ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+        } ?: ExifInterface.ORIENTATION_NORMAL
+        val deg = when (ori) {
+            ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+            ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+            ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+            else -> 0f
+        }
+        if (deg != 0f) {
+            val m = Matrix()
+            m.postRotate(deg)
+            bmp = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
+        }
+        photoFile().outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 90, it) }
     }
 
     private fun showKeyDialog() {
@@ -402,7 +649,9 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
         }
         hud.active = true
         status.text = "আপনি: $userText\n\nভাবছি…"
-        val name = prefs().getString("name", "").orEmpty()
+        val p = prefs()
+        var name = p.getString("fullname", "").orEmpty()
+        if (name.isEmpty()) name = p.getString("username", "").orEmpty()
         val sys = if (name.isEmpty()) SYS else SYS + "\nব্যবহারকারীর নাম: " + name
 
         Thread {
