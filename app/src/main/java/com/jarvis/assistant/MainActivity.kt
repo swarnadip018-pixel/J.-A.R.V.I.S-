@@ -46,7 +46,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private val SOFT = Color.parseColor("#7FDBE8")
     private val PANEL = Color.parseColor("#0A1A24")
     private val RED = Color.parseColor("#FF4D4D")
-    private val MODEL = "gemini-2.5-flash"
+        private val MODEL = "gemini-3.6-flash"
     private val PICK_PHOTO = 77
 
     private val SYS = """তুমি J.A.R.V.I.S, ব্যবহারকারীর ব্যক্তিগত ভয়েস সহকারী। শান্ত, ভদ্র ও সংক্ষিপ্তভাবে উত্তর দাও (সাধারণত ১-৩ বাক্য), কারণ উত্তরটা জোরে পড়ে শোনানো হবে।
