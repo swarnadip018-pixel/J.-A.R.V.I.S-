@@ -46,7 +46,13 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private val SOFT = Color.parseColor("#7FDBE8")
     private val PANEL = Color.parseColor("#0A1A24")
     private val RED = Color.parseColor("#FF4D4D")
-        private val MODEL = "gemini-3.6-flash"
+    private val MODELS = listOf(
+        "gemini-3.6-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.5-flash",
+        "gemini-3.7-flash",
+        "gemini-3.8-flash"
+    )
     private val PICK_PHOTO = 77
 
     private val SYS = """তুমি J.A.R.V.I.S, ব্যবহারকারীর ব্যক্তিগত ভয়েস সহকারী। শান্ত, ভদ্র ও সংক্ষিপ্তভাবে উত্তর দাও (সাধারণত ১-৩ বাক্য), কারণ উত্তরটা জোরে পড়ে শোনানো হবে।
@@ -197,9 +203,10 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
             startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
         }
         item("ℹ️", "অ্যাপ সম্পর্কে") {
+            val m = prefs().getString("model", "") ?: ""
             darkDialog()
                 .setTitle("J.A.R.V.I.S")
-                .setMessage("আপনার ব্যক্তিগত সহকারী\nসংস্করণ 2.2 (প্রোফাইল পেজ ও শিরা-আলো)")
+                .setMessage("আপনার ব্যক্তিগত সহকারী\nসংস্করণ 2.3\nAI মডেল: " + (if (m.isEmpty()) "এখনও বাছা হয়নি" else m))
                 .setPositiveButton("ঠিক আছে", null).show()
         }
     }
@@ -345,7 +352,6 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
         sv.addView(col)
         profilePage.addView(sv, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
-        // ওপরের বার
         val back = TextView(this)
         back.text = "‹ BACK"
         back.setTextColor(CYAN)
@@ -368,7 +374,6 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
         hLp.rightMargin = dp(20)
         profilePage.addView(head, hLp)
 
-        // সবার নিচে LOG OUT
         val out = boxButton("⏻  LOG OUT", RED)
         out.setOnClickListener { confirmLogout() }
         val oLp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
@@ -495,7 +500,7 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
             .setPositiveButton("সেভ") { _, _ ->
                 val k = key.text.toString().trim()
                 if (k.isNotEmpty()) {
-                    prefs().edit().putString("key", k).apply()
+                    prefs().edit().putString("key", k).remove("model").apply()
                     toast("Key সেভ হয়েছে")
                 }
             }
@@ -617,7 +622,7 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
                     }
                 } else {
                     chatMode = false
-                    status.text = "বুঝতে পারিনি, আবার গোলকে চেপে বলুন (কোড $e)"
+                    status.text = "মাইক বুঝতে পারেনি, আবার গোলকে চেপে বলুন (মাইক এরর কোড $e)"
                 }
             }
             override fun onReadyForSpeech(p: Bundle?) {
@@ -638,6 +643,52 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
     }
 
     // ---------- AI ব্রেইন ----------
+    private fun callGemini(model: String, key: String, body: JSONObject): Pair<Int, String> {
+        val url = URL("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent")
+        val conn = url.openConnection() as HttpURLConnection
+        conn.requestMethod = "POST"
+        conn.connectTimeout = 15000
+        conn.readTimeout = 45000
+        conn.setRequestProperty("Content-Type", "application/json")
+        conn.setRequestProperty("x-goog-api-key", key)
+        conn.doOutput = true
+        conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+        val code = conn.responseCode
+        val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+        val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
+        return Pair(code, text)
+    }
+
+    private fun listModels(key: String): String {
+        return try {
+            val url = URL("https://generativelanguage.googleapis.com/v1beta/models?pageSize=100")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.connectTimeout = 15000
+            conn.readTimeout = 20000
+            conn.setRequestProperty("x-goog-api-key", key)
+            val code = conn.responseCode
+            if (code !in 200..299) return "(তালিকা আনা যায়নি, কোড $code)"
+            val text = conn.inputStream.bufferedReader().use { it.readText() }
+            val arr = JSONObject(text).getJSONArray("models")
+            val names = ArrayList<String>()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val methods = o.optJSONArray("supportedGenerationMethods")
+                var ok = false
+                if (methods != null) {
+                    for (k in 0 until methods.length()) {
+                        if (methods.getString(k) == "generateContent") ok = true
+                    }
+                }
+                val n = o.getString("name").removePrefix("models/")
+                if (ok && n.startsWith("gemini")) names.add(n)
+            }
+            if (names.isEmpty()) "(কোনো মডেল পাওয়া যায়নি)" else names.take(15).joinToString("\n")
+        } catch (e: Exception) {
+            "(তালিকা আনা যায়নি)"
+        }
+    }
+
     private fun askAi(userText: String) {
         val key = prefs().getString("key", "")?.trim().orEmpty()
         if (key.isEmpty()) {
@@ -653,6 +704,7 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
         var name = p.getString("fullname", "").orEmpty()
         if (name.isEmpty()) name = p.getString("username", "").orEmpty()
         val sys = if (name.isEmpty()) SYS else SYS + "\nব্যবহারকারীর নাম: " + name
+        val saved = p.getString("model", "").orEmpty()
 
         Thread {
             try {
@@ -669,26 +721,25 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
                 val body = JSONObject()
                     .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", sys))))
                     .put("contents", contents)
-                                        .put("generationConfig", JSONObject()
+                    .put("generationConfig", JSONObject()
                         .put("responseMimeType", "application/json"))
 
-                val url = URL("https://generativelanguage.googleapis.com/v1beta/models/$MODEL:generateContent")
-                val conn = url.openConnection() as HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.connectTimeout = 15000
-                conn.readTimeout = 45000
-                conn.setRequestProperty("Content-Type", "application/json")
-                conn.setRequestProperty("x-goog-api-key", key)
-                conn.doOutput = true
-                conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+                val order = ArrayList<String>()
+                if (saved.isNotEmpty()) order.add(saved)
+                for (m in MODELS) if (!order.contains(m)) order.add(m)
 
-                val code = conn.responseCode
-                val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-                val text = stream.bufferedReader().use { it.readText() }
+                var code = 0
+                var text = ""
+                var used = ""
+                for (m in order) {
+                    val r = callGemini(m, key, body)
+                    code = r.first
+                    text = r.second
+                    used = m
+                    if (code != 404) break
+                }
 
-                if (code !in 200..299) {
-                    runOnUiThread { showHttpError(code) }
-                } else {
+                if (code in 200..299) {
                     val out = JSONObject(text).getJSONArray("candidates").getJSONObject(0)
                         .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
                     val clean = out.replace("```json", "").replace("```", "").trim()
@@ -699,6 +750,7 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
                     val lang = j.optString("lang", "bn")
                     history.add(Pair("user", userText))
                     history.add(Pair("model", reply))
+                    prefs().edit().putString("model", used).apply()
                     runOnUiThread {
                         status.text = "আপনি: $userText\n\n$reply"
                         if (!speakIn(lang, reply)) {
@@ -707,6 +759,16 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
                             status.text = status.text.toString() + "\n\n(এই ভাষার ভয়েস ফোনে নেই। Settings → Text-to-speech → Google Speech Services থেকে ডাউনলোড করুন।)"
                         }
                     }
+                } else if (code == 404) {
+                    prefs().edit().remove("model").apply()
+                    val list = listModels(key)
+                    runOnUiThread {
+                        chatMode = false
+                        hud.active = false
+                        status.text = "AI মডেল পাওয়া যায়নি (সার্ভার কোড 404)।\n\nআপনার Key যে মডেলগুলো ব্যবহার করতে পারে:\n$list\n\nএই তালিকার স্ক্রিনশট আমাকে পাঠান।"
+                    }
+                } else {
+                    runOnUiThread { showHttpError(code) }
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -722,10 +784,9 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
         chatMode = false
         hud.active = false
         status.text = when (code) {
-            400, 403 -> "API Key ঠিক নয় বা অনুমতি নেই (কোড $code)। মেনু → API Key-তে আবার বসান।"
-            404 -> "মডেলের নাম পাওয়া যায়নি (কোড 404)। আমাকে জানান।"
-            429 -> "ফ্রি সীমা শেষ। কিছুক্ষণ পরে আবার চেষ্টা করুন (কোড 429)।"
-            else -> "সার্ভারে সমস্যা হয়েছে (কোড $code)। আবার চেষ্টা করুন।"
+            400, 403 -> "API Key ঠিক নয় বা অনুমতি নেই (সার্ভার কোড $code)। মেনু → API Key-তে আবার বসান।"
+            429 -> "ফ্রি সীমা শেষ। কিছুক্ষণ পরে আবার চেষ্টা করুন (সার্ভার কোড 429)।"
+            else -> "সার্ভারে সমস্যা হয়েছে (সার্ভার কোড $code)। আবার চেষ্টা করুন।"
         }
     }
 
