@@ -3,6 +3,7 @@ package com.jarvis.assistant
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -12,9 +13,14 @@ import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.media.ExifInterface
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Bundle
+import android.provider.AlarmClock
+import android.provider.ContactsContract
 import android.provider.Settings
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
@@ -38,6 +44,9 @@ import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 class MainActivity : Activity(), TextToSpeech.OnInitListener {
@@ -58,30 +67,59 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private val SYS = """তুমি J.A.R.V.I.S, ব্যবহারকারীর ব্যক্তিগত ভয়েস সহকারী। শান্ত, ভদ্র ও সংক্ষিপ্তভাবে উত্তর দাও (সাধারণত ১-৩ বাক্য), কারণ উত্তরটা জোরে পড়ে শোনানো হবে।
 ব্যবহারকারী যে ভাষায় কথা বলেছে, ঠিক সেই ভাষাতেই উত্তর দাও।
 উত্তর শুধু এই JSON ফরম্যাটে দাও, অন্য কিছু নয়:
-{"lang":"ভাষার কোড (bn, en, hi, ur, ar, ta ইত্যাদি)","reply":"তোমার উত্তর"}
+{"lang":"ভাষার কোড (bn, en, hi, ur, ar, ta ইত্যাদি)","reply":"তোমার উত্তর","action":"none","arg":"","arg2":""}
 reply-তে মার্কডাউন, তারকা চিহ্ন বা ইমোজি ব্যবহার করো না।
-তুমি এখনও ফোন নিয়ন্ত্রণ (কল, অ্যাপ খোলা) বা লাইভ ইন্টারনেট সার্চ করতে পারো না। এমন কিছু চাইলে সৎভাবে বলো যে এই সুবিধা এখনও যোগ হয়নি। আন্দাজে ভুল তথ্য দিও না।"""
+
+ফোনে কাজ করানোর জন্য action ঘরে এগুলোর একটা দাও (না লাগলে "none"):
+- open_app: arg = অ্যাপের নাম ইংরেজিতে, যেমন YouTube, WhatsApp, Camera, Settings, Chrome, Gallery
+- dial: arg = ফোন নম্বর (ডায়ালারে নম্বর সাজিয়ে দেয়, কল ব্যবহারকারী নিজে করে)
+- call_contact: arg = কন্টাক্টের নাম (ফোনে যেভাবে সেভ থাকার সম্ভাবনা, বাংলা নাম হলে ইংরেজি বানানও ভাবো)
+- sms: arg = নম্বর বা কন্টাক্টের নাম, arg2 = মেসেজের লেখা (মেসেজ লেখার স্ক্রিন খোলে, পাঠায় ব্যবহারকারী)
+- torch: arg = "on" বা "off"
+- alarm: arg = "HH:MM" (২৪ ঘণ্টার ফরম্যাট), arg2 = লেবেল
+- timer: arg = সেকেন্ড সংখ্যা
+- search: arg = গুগলে খোঁজার শব্দ
+- youtube: arg = ইউটিউবে খোঁজার শব্দ
+- maps: arg = জায়গার নাম
+
+নিয়ম: reply-তে শুধু বলো তুমি কী করছ, যেমন "ইউটিউব খুলছি"। কল বা SMS-এর ক্ষেত্রে বলো "ডায়ালারে সাজিয়ে দিচ্ছি, কল বাটন আপনি চাপুন"। বার্তা বা কলের নম্বর না জানলে আন্দাজ করো না, action none দিয়ে জিজ্ঞেস করো। এই তালিকার বাইরের কাজ (Wi-Fi/ব্লুটুথ অন-অফ, অন্য অ্যাপের ভেতরে ট্যাপ, ক্যামেরায় ছবি তোলা, সার্চের ফল পড়ে শোনানো) এখনও পারো না, সৎভাবে বলো। আন্দাজে ভুল তথ্য দিও না।"""
 
     private lateinit var tts: TextToSpeech
     private lateinit var status: TextView
     private lateinit var hud: HudView
+    private lateinit var circuit: CircuitBgView
     private lateinit var drawer: LinearLayout
     private lateinit var scrim: View
+    private lateinit var chatBox: LinearLayout
+    private lateinit var chatScroll: ScrollView
+    private lateinit var avatarImg: ImageView
+    private lateinit var avatarEmoji: TextView
     private lateinit var profilePage: FrameLayout
     private lateinit var photoView: ImageView
     private lateinit var photoPlaceholder: TextView
+    private lateinit var historyPage: FrameLayout
+    private lateinit var histBox: LinearLayout
+    private lateinit var histScroll: ScrollView
     private lateinit var fUser: EditText
     private lateinit var fFull: EditText
     private lateinit var fMail: EditText
     private lateinit var fPhone: EditText
     private var recognizer: SpeechRecognizer? = null
+    private var player: MediaPlayer? = null
+    private var voiceGen = 0
     private val history = ArrayList<Pair<String, String>>()
     private var chatMode = false
     private var silent = 0
+    private var pendingAction: JSONObject? = null
+    private var pendingPerm: JSONObject? = null
+    private var torchOn = false
+    private val timeFmt = SimpleDateFormat("hh:mm a", Locale.getDefault())
+    private val dateFmt = SimpleDateFormat("d MMMM yyyy, EEEE", Locale.getDefault())
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
     private fun prefs() = getSharedPreferences("jarvis", Context.MODE_PRIVATE)
     private fun photoFile() = File(filesDir, "profile.jpg")
+    private fun histFile() = File(filesDir, "chat_history.jsonl")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -92,10 +130,14 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
         val root = FrameLayout(this)
         root.setBackgroundColor(BG)
 
+        circuit = CircuitBgView(this)
+        circuit.isGlowing = { hud.active || chatMode }
+        root.addView(circuit, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
         val content = LinearLayout(this)
         content.orientation = LinearLayout.VERTICAL
         content.gravity = Gravity.CENTER_HORIZONTAL
-        content.setPadding(0, dp(110), 0, 0)
+        content.setPadding(0, dp(96), 0, 0)
 
         val title = TextView(this)
         title.text = "J.A.R.V.I.S"
@@ -114,7 +156,7 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
 
         hud = HudView(this)
         val hudLp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        hudLp.setMargins(dp(60), dp(24), dp(60), 0)
+        hudLp.setMargins(dp(76), dp(16), dp(76), 0)
         hud.setOnClickListener {
             if (chatMode) {
                 stopChat("কথোপকথন বন্ধ। আবার শুরু করতে গোলকে চাপুন।")
@@ -124,21 +166,30 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
                 micTap()
             }
         }
+        hud.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> updateFocus() }
 
         status = TextView(this)
-        status.text = "গোলকে একবার চাপুন, তারপর স্বাভাবিকভাবে কথা বলুন। বন্ধ করতে আবার চাপুন।"
-        status.textSize = 16f
-        status.setTextColor(Color.WHITE)
+        status.text = "গোলকে একবার চাপুন, তারপর স্বাভাবিকভাবে কথা বলুন।"
+        status.textSize = 13f
+        status.setTextColor(SOFT)
         status.gravity = Gravity.CENTER
-        status.setPadding(dp(24), dp(16), dp(24), dp(16))
-        val scroll = ScrollView(this)
-        scroll.addView(status)
+        status.maxLines = 3
+        status.minHeight = dp(24)
+        status.setPadding(dp(24), dp(6), dp(24), dp(6))
+
+        chatBox = LinearLayout(this)
+        chatBox.orientation = LinearLayout.VERTICAL
+        chatBox.setPadding(dp(12), dp(4), dp(12), dp(16))
+        chatScroll = ScrollView(this)
+        chatScroll.isVerticalScrollBarEnabled = false
+        chatScroll.addView(chatBox)
 
         content.addView(title)
         content.addView(sub)
         content.addView(hud, hudLp)
-        content.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        root.addView(content)
+        content.addView(status, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        content.addView(chatScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        root.addView(content, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         val menuBtn = TextView(this)
         menuBtn.text = "☰"
@@ -150,20 +201,26 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
         menuBtn.setOnClickListener { openDrawer() }
         root.addView(menuBtn, mLp)
 
-        val profile = TextView(this)
-        profile.text = "👤"
-        profile.textSize = 20f
-        profile.gravity = Gravity.CENTER
+        val avatar = FrameLayout(this)
         val ring = GradientDrawable()
         ring.shape = GradientDrawable.OVAL
         ring.setStroke(dp(2), CYAN)
         ring.setColor(PANEL)
-        profile.background = ring
+        avatar.background = ring
+        avatar.clipToOutline = true
+        avatarEmoji = TextView(this)
+        avatarEmoji.text = "👤"
+        avatarEmoji.textSize = 20f
+        avatarEmoji.gravity = Gravity.CENTER
+        avatarImg = ImageView(this)
+        avatarImg.scaleType = ImageView.ScaleType.CENTER_CROP
+        avatar.addView(avatarEmoji, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        avatar.addView(avatarImg, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         val pLp = FrameLayout.LayoutParams(dp(44), dp(44), Gravity.TOP or Gravity.END)
         pLp.topMargin = dp(42)
         pLp.rightMargin = dp(16)
-        profile.setOnClickListener { openProfile() }
-        root.addView(profile, pLp)
+        avatar.setOnClickListener { openProfile() }
+        root.addView(avatar, pLp)
 
         scrim = View(this)
         scrim.setBackgroundColor(Color.parseColor("#99000000"))
@@ -182,8 +239,22 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
         buildProfilePage()
         root.addView(profilePage, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
+        buildHistoryPage()
+        root.addView(historyPage, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
         setContentView(root)
+        refreshAvatar()
         tts = TextToSpeech(this, this)
+    }
+
+    private fun updateFocus() {
+        val a = IntArray(2)
+        val b = IntArray(2)
+        hud.getLocationInWindow(a)
+        circuit.getLocationInWindow(b)
+        circuit.focusX = a[0] - b[0] + hud.width / 2f
+        circuit.focusY = a[1] - b[1] + hud.height / 2f
+        circuit.invalidate()
     }
 
     // ---------- মেনু ----------
@@ -195,9 +266,14 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
         head.setPadding(0, 0, 0, dp(16))
         drawer.addView(head)
 
-        item("💬", "কথোপকথন মুছুন") { history.clear(); toast("মুছে ফেলা হয়েছে") }
+        item("🕘", "কথোপকথনের ইতিহাস") { openHistory() }
+        item("✨", "নতুন কথোপকথন") {
+            history.clear()
+            chatBox.removeAllViews()
+            status.text = "নতুন কথোপকথন শুরু। গোলকে চাপুন।"
+        }
         item("🌐", "শোনার ভাষা") { showLangDialog() }
-        item("🔊", "ভয়েস সেটিংস") { toast("শীঘ্রই আসছে") }
+        item("🔊", "ক্লোন ভয়েস (Fish Audio)") { showFishDialog() }
         item("🔑", "API Key") { showKeyDialog() }
         item("🔒", "অনুমতি") {
             startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
@@ -206,7 +282,7 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
             val m = prefs().getString("model", "") ?: ""
             darkDialog()
                 .setTitle("J.A.R.V.I.S")
-                .setMessage("আপনার ব্যক্তিগত সহকারী\nসংস্করণ 2.3\nAI মডেল: " + (if (m.isEmpty()) "এখনও বাছা হয়নি" else m))
+                .setMessage("আপনার ব্যক্তিগত সহকারী\nসংস্করণ 2.6\nAI মডেল: " + (if (m.isEmpty()) "এখনও বাছা হয়নি" else m))
                 .setPositiveButton("ঠিক আছে", null).show()
         }
     }
@@ -235,6 +311,7 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
 
     override fun onBackPressed() {
         when {
+            historyPage.visibility == View.VISIBLE -> closeHistory()
             profilePage.visibility == View.VISIBLE -> closeProfile()
             scrim.visibility == View.VISIBLE -> closeDrawer()
             else -> super.onBackPressed()
@@ -242,6 +319,234 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
     }
 
     private fun darkDialog() = AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+
+    // ---------- চ্যাট বুদবুদ ও ইতিহাস ----------
+    // role: 0 = আপনি, 1 = জার্ভিস, 2 = সিস্টেম বার্তা
+    private fun bubbleView(role: Int, text: String, ts: Long): View {
+        val wrap = LinearLayout(this)
+        wrap.orientation = LinearLayout.VERTICAL
+        val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        lp.topMargin = dp(4)
+        lp.bottomMargin = dp(4)
+        val maxW = (resources.displayMetrics.widthPixels * 0.76f).toInt()
+
+        if (role == 2) {
+            lp.gravity = Gravity.CENTER_HORIZONTAL
+            val t = TextView(this)
+            t.text = text
+            t.textSize = 12.5f
+            t.setTextColor(Color.parseColor("#FFB4B4"))
+            t.gravity = Gravity.CENTER
+            t.maxWidth = (resources.displayMetrics.widthPixels * 0.9f).toInt()
+            val sh = GradientDrawable()
+            sh.cornerRadius = dp(12).toFloat()
+            sh.setColor(Color.parseColor("#CC1A0E10"))
+            t.background = sh
+            t.setPadding(dp(12), dp(8), dp(12), dp(8))
+            wrap.addView(t)
+            wrap.layoutParams = lp
+            return wrap
+        }
+
+        val user = role == 0
+        lp.gravity = if (user) Gravity.END else Gravity.START
+        val t = TextView(this)
+        t.text = text
+        t.textSize = 15f
+        t.setTextColor(Color.WHITE)
+        t.maxWidth = maxW
+        val big = dp(16).toFloat()
+        val small = dp(4).toFloat()
+        val sh = GradientDrawable()
+        if (user) {
+            sh.cornerRadii = floatArrayOf(big, big, big, big, small, small, big, big)
+            sh.setColor(Color.parseColor("#E6103A52"))
+            sh.setStroke(dp(1), Color.parseColor("#7000E5FF"))
+        } else {
+            sh.cornerRadii = floatArrayOf(big, big, big, big, big, big, small, small)
+            sh.setColor(Color.parseColor("#E60B141C"))
+            sh.setStroke(dp(1), Color.parseColor("#507FDBE8"))
+        }
+        t.background = sh
+        t.setPadding(dp(14), dp(10), dp(14), dp(10))
+
+        val time = TextView(this)
+        time.text = timeFmt.format(Date(ts))
+        time.textSize = 10f
+        time.setTextColor(Color.parseColor("#7C97A3"))
+        time.setPadding(dp(6), dp(2), dp(6), 0)
+        val tlp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        tlp.gravity = if (user) Gravity.END else Gravity.START
+
+        wrap.addView(t)
+        wrap.addView(time, tlp)
+        wrap.layoutParams = lp
+        return wrap
+    }
+
+    private fun saveMsg(role: Int, text: String, ts: Long) {
+        try {
+            val line = JSONObject()
+                .put("t", ts)
+                .put("r", if (role == 0) "u" else "j")
+                .put("m", text)
+                .toString()
+            histFile().appendText(line + "\n")
+        } catch (e: Exception) {
+        }
+    }
+
+    private fun loadSaved(): List<Triple<Int, String, Long>> {
+        val out = ArrayList<Triple<Int, String, Long>>()
+        try {
+            val f = histFile()
+            if (!f.exists()) return out
+            for (line in f.readLines()) {
+                if (line.isBlank()) continue
+                try {
+                    val j = JSONObject(line)
+                    out.add(Triple(if (j.optString("r") == "u") 0 else 1, j.optString("m"), j.optLong("t")))
+                } catch (e: Exception) {
+                }
+            }
+        } catch (e: Exception) {
+        }
+        return out
+    }
+
+    private fun addMsg(role: Int, text: String) {
+        val ts = System.currentTimeMillis()
+        if (role != 2) saveMsg(role, text, ts)
+        chatBox.addView(bubbleView(role, text, ts))
+        chatScroll.post { chatScroll.fullScroll(View.FOCUS_DOWN) }
+    }
+
+    private fun note(msg: String) = addMsg(2, msg)
+
+    private fun err(msg: String) {
+        chatMode = false
+        hud.active = false
+        status.text = ""
+        addMsg(2, msg)
+    }
+
+    private fun buildHistoryPage() {
+        historyPage = FrameLayout(this)
+        historyPage.setBackgroundColor(Color.parseColor("#F5050B12"))
+        historyPage.isClickable = true
+        historyPage.visibility = View.GONE
+
+        histBox = LinearLayout(this)
+        histBox.orientation = LinearLayout.VERTICAL
+        histBox.setPadding(dp(14), dp(96), dp(14), dp(24))
+        histScroll = ScrollView(this)
+        histScroll.addView(histBox)
+        historyPage.addView(histScroll, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
+        val back = TextView(this)
+        back.text = "‹ BACK"
+        back.setTextColor(CYAN)
+        back.textSize = 16f
+        mono(back)
+        back.setPadding(dp(16), dp(10), dp(16), dp(10))
+        val bLp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START)
+        bLp.topMargin = dp(38)
+        back.setOnClickListener { closeHistory() }
+        historyPage.addView(back, bLp)
+
+        val head = TextView(this)
+        head.text = "// HISTORY"
+        head.setTextColor(CYAN)
+        head.textSize = 16f
+        head.letterSpacing = 0.2f
+        mono(head)
+        val hLp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
+        hLp.topMargin = dp(48)
+        historyPage.addView(head, hLp)
+
+        val del = TextView(this)
+        del.text = "🗑 মুছুন"
+        del.setTextColor(RED)
+        del.textSize = 14f
+        del.setPadding(dp(16), dp(10), dp(16), dp(10))
+        val dLp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END)
+        dLp.topMargin = dp(40)
+        del.setOnClickListener {
+            darkDialog()
+                .setTitle("ইতিহাস মুছুন")
+                .setMessage("সব সেভ করা কথোপকথন চিরতরে মুছে যাবে। নিশ্চিত?")
+                .setPositiveButton("হ্যাঁ, মুছুন") { _, _ ->
+                    histFile().delete()
+                    fillHistory()
+                    toast("ইতিহাস মুছে ফেলা হয়েছে")
+                }
+                .setNegativeButton("না", null).show()
+        }
+        historyPage.addView(del, dLp)
+    }
+
+    private fun fillHistory() {
+        histBox.removeAllViews()
+        var all = loadSaved()
+        if (all.isEmpty()) {
+            val e = TextView(this)
+            e.text = "এখনও কোনো কথোপকথন সেভ হয়নি।"
+            e.setTextColor(SOFT)
+            e.textSize = 15f
+            e.gravity = Gravity.CENTER
+            e.setPadding(0, dp(60), 0, 0)
+            histBox.addView(e)
+            return
+        }
+        if (all.size > 500) {
+            all = all.takeLast(500)
+            val m = TextView(this)
+            m.text = "সর্বশেষ ৫০০টা বার্তা দেখানো হচ্ছে"
+            m.setTextColor(Color.parseColor("#7C97A3"))
+            m.textSize = 11f
+            m.gravity = Gravity.CENTER
+            histBox.addView(m)
+        }
+        var lastDay = ""
+        for (x in all) {
+            val day = dateFmt.format(Date(x.third))
+            if (day != lastDay) {
+                lastDay = day
+                val h = TextView(this)
+                h.text = day
+                h.setTextColor(SOFT)
+                h.textSize = 12f
+                h.gravity = Gravity.CENTER
+                val sh = GradientDrawable()
+                sh.cornerRadius = dp(12).toFloat()
+                sh.setColor(Color.parseColor("#CC0A1A24"))
+                h.background = sh
+                h.setPadding(dp(14), dp(6), dp(14), dp(6))
+                val hl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                hl.gravity = Gravity.CENTER_HORIZONTAL
+                hl.topMargin = dp(14)
+                hl.bottomMargin = dp(6)
+                histBox.addView(h, hl)
+            }
+            histBox.addView(bubbleView(x.first, x.second, x.third))
+        }
+    }
+
+    private fun openHistory() {
+        fillHistory()
+        val w = resources.displayMetrics.widthPixels.toFloat()
+        historyPage.translationX = w
+        historyPage.visibility = View.VISIBLE
+        historyPage.animate().translationX(0f).setDuration(240).start()
+        histScroll.post { histScroll.fullScroll(View.FOCUS_DOWN) }
+    }
+
+    private fun closeHistory() {
+        val w = resources.displayMetrics.widthPixels.toFloat()
+        historyPage.animate().translationX(w).setDuration(220).withEndAction {
+            historyPage.visibility = View.GONE
+        }.start()
+    }
 
     // ---------- প্রোফাইল পেজ ----------
     private fun mono(t: TextView) { t.typeface = Typeface.MONOSPACE }
@@ -253,21 +558,17 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
         l.textSize = 11f
         l.letterSpacing = 0.2f
         mono(l)
-        l.setPadding(dp(4), dp(16), 0, dp(6))
+        l.setPadding(dp(4), dp(18), 0, dp(2))
         val e = EditText(this)
         e.hint = hint
         e.inputType = type
         e.setSingleLine(true)
         e.setTextColor(Color.WHITE)
         e.setHintTextColor(Color.parseColor("#4A6572"))
-        e.textSize = 16f
+        e.textSize = 17f
         mono(e)
-        val bg = GradientDrawable()
-        bg.setColor(PANEL)
-        bg.setStroke(dp(1), CYAN)
-        bg.cornerRadius = dp(6).toFloat()
-        e.background = bg
-        e.setPadding(dp(14), dp(12), dp(14), dp(12))
+        e.background = null
+        e.setPadding(dp(4), dp(6), dp(4), dp(6))
         parent.addView(l, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         parent.addView(e, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         return e
@@ -344,7 +645,7 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
         val save = boxButton("SAVE", CYAN)
         save.setOnClickListener { saveProfile(); toast("সেভ হয়েছে") }
         val saveLp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        saveLp.topMargin = dp(24)
+        saveLp.topMargin = dp(28)
         col.addView(save, saveLp)
 
         val sv = ScrollView(this)
@@ -379,6 +680,17 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
         val oLp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
         oLp.setMargins(dp(24), 0, dp(24), dp(28))
         profilePage.addView(out, oLp)
+    }
+
+    private fun refreshAvatar() {
+        val f = photoFile()
+        if (f.exists()) {
+            avatarImg.setImageBitmap(BitmapFactory.decodeFile(f.absolutePath))
+            avatarEmoji.visibility = View.GONE
+        } else {
+            avatarImg.setImageDrawable(null)
+            avatarEmoji.visibility = View.VISIBLE
+        }
     }
 
     private fun loadProfileUi() {
@@ -416,6 +728,7 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
 
     private fun closeProfile() {
         saveProfile()
+        refreshAvatar()
         val w = resources.displayMetrics.widthPixels.toFloat()
         profilePage.animate().translationX(w).setDuration(220).withEndAction {
             profilePage.visibility = View.GONE
@@ -425,11 +738,10 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
     private fun confirmLogout() {
         darkDialog()
             .setTitle("LOG OUT")
-            .setMessage("আপনার প্রোফাইলের তথ্য ও ছবি এই ফোন থেকে মুছে যাবে। (API Key থাকবে।) নিশ্চিত?")
+            .setMessage("আপনার প্রোফাইলের তথ্য ও ছবি এই ফোন থেকে মুছে যাবে। (কথোপকথনের ইতিহাস, API Key ও ক্লোন ভয়েস সেটিং থাকবে।) নিশ্চিত?")
             .setPositiveButton("হ্যাঁ, মুছুন") { _, _ ->
                 prefs().edit().remove("username").remove("fullname").remove("email").remove("phone").apply()
                 photoFile().delete()
-                history.clear()
                 loadProfileUi()
                 closeProfile()
                 toast("লগ আউট হয়েছে")
@@ -450,6 +762,7 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
             try {
                 savePhoto(data.data!!)
                 loadProfileUi()
+                refreshAvatar()
             } catch (e: Exception) {
                 toast("ছবিটা নেওয়া যায়নি")
             }
@@ -490,7 +803,7 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
         info.text = "aistudio.google.com থেকে নেওয়া Gemini API Key এখানে পেস্ট করুন। এটা শুধু আপনার ফোনে থাকবে।"
         info.setTextColor(Color.WHITE)
         val key = EditText(this)
-        key.hint = "AIza..."
+        key.hint = "AQ... বা AIza..."
         key.setTextColor(Color.WHITE)
         key.setHintTextColor(Color.GRAY)
         box.addView(info)
@@ -507,6 +820,51 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
             .setNegativeButton("বন্ধ", null).show()
     }
 
+    private fun showFishDialog() {
+        val p = prefs()
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.VERTICAL
+        box.setPadding(dp(24), dp(8), dp(24), 0)
+        val info = TextView(this)
+        info.text = "Fish Audio-র API Key ও ক্লোন ভয়েসের Reference ID বসান। উত্তরের লেখা Fish Audio-র সার্ভারে যাবে। শুধু নিজের বা অনুমতি পাওয়া কণ্ঠ ব্যবহার করুন।"
+        info.setTextColor(Color.WHITE)
+        val k = EditText(this)
+        k.hint = "Fish Audio API Key"
+        k.setSingleLine(true)
+        k.setTextColor(Color.WHITE)
+        k.setHintTextColor(Color.GRAY)
+        val id = EditText(this)
+        id.hint = "Reference ID"
+        id.setSingleLine(true)
+        id.setTextColor(Color.WHITE)
+        id.setHintTextColor(Color.GRAY)
+        box.addView(info)
+        box.addView(k)
+        box.addView(id)
+        val has = !p.getString("fish_key", "").isNullOrEmpty() && !p.getString("fish_id", "").isNullOrEmpty()
+        val on = p.getBoolean("fish_on", true)
+        val title = if (has) (if (on) "🔊 ক্লোন ভয়েস (চালু)" else "🔊 ক্লোন ভয়েস (বন্ধ)") else "🔊 ক্লোন ভয়েস"
+        val b = darkDialog().setTitle(title).setView(box)
+            .setPositiveButton("সেভ ও চালু") { _, _ ->
+                val kk = k.text.toString().trim()
+                val ii = id.text.toString().trim()
+                val e = prefs().edit()
+                if (kk.isNotEmpty()) e.putString("fish_key", kk)
+                if (ii.isNotEmpty()) e.putString("fish_id", ii)
+                e.putBoolean("fish_on", true)
+                e.apply()
+                toast("সেভ হয়েছে। এবার জার্ভিসকে কিছু জিজ্ঞেস করুন।")
+            }
+            .setNegativeButton("বন্ধ", null)
+        if (has) {
+            b.setNeutralButton(if (on) "ক্লোন বন্ধ করুন" else "ক্লোন চালু করুন") { _, _ ->
+                prefs().edit().putBoolean("fish_on", !on).apply()
+                toast(if (on) "ফোনের সাধারণ ভয়েসে ফিরলাম" else "ক্লোন ভয়েস চালু")
+            }
+        }
+        b.show()
+    }
+
     private fun showLangDialog() {
         val names = arrayOf("বাংলা", "English", "हिन्दी")
         val codes = arrayOf("bn-BD", "en-US", "hi-IN")
@@ -518,9 +876,17 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
     }
 
     // ---------- কথোপকথন নিয়ন্ত্রণ ----------
+    private fun stopVoice() {
+        voiceGen++
+        tts.stop()
+        try { player?.release() } catch (e: Exception) { }
+        player = null
+    }
+
     private fun stopChat(msg: String) {
         chatMode = false
-        tts.stop()
+        pendingAction = null
+        stopVoice()
         recognizer?.cancel()
         hud.active = false
         status.text = msg
@@ -552,6 +918,17 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
 
     private fun afterSpeech() {
         hud.active = false
+        val p = pendingAction
+        pendingAction = null
+        if (p != null) {
+            val left = runAction(p)
+            if (left) {
+                chatMode = false
+            } else if (chatMode) {
+                hud.postDelayed({ if (chatMode) listen() }, 500)
+            }
+            return
+        }
         if (chatMode) {
             hud.postDelayed({ if (chatMode) listen() }, 500)
         }
@@ -575,6 +952,225 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
         return false
     }
 
+    private fun speakReply(lang: String, text: String): Boolean {
+        val p = prefs()
+        val fk = p.getString("fish_key", "").orEmpty().trim()
+        val fid = p.getString("fish_id", "").orEmpty().trim()
+        if (fk.isNotEmpty() && fid.isNotEmpty() && p.getBoolean("fish_on", true)) {
+            speakFish(lang, text, fk, fid)
+            return true
+        }
+        return speakIn(lang, text)
+    }
+
+    private fun speakFish(lang: String, text: String, fk: String, fid: String) {
+        val gen = voiceGen
+        Thread {
+            var code = 0
+            var ok = false
+            val f = File(cacheDir, "jarvis_voice.mp3")
+            try {
+                val body = JSONObject()
+                    .put("text", text)
+                    .put("reference_id", fid)
+                    .put("format", "mp3")
+                for (m in listOf("s2-pro", "s2.1-pro")) {
+                    val conn = URL("https://api.fish.audio/v1/tts").openConnection() as HttpURLConnection
+                    conn.requestMethod = "POST"
+                    conn.connectTimeout = 15000
+                    conn.readTimeout = 40000
+                    conn.setRequestProperty("Authorization", "Bearer " + fk)
+                    conn.setRequestProperty("Content-Type", "application/json")
+                    conn.setRequestProperty("model", m)
+                    conn.doOutput = true
+                    conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+                    code = conn.responseCode
+                    if (code in 200..299) {
+                        conn.inputStream.use { ins -> f.outputStream().use { ins.copyTo(it) } }
+                        ok = true
+                        break
+                    }
+                    if (code == 401 || code == 402 || code == 429) break
+                }
+            } catch (e: Exception) {
+                code = -1
+            }
+            runOnUiThread {
+                if (gen == voiceGen) {
+                    if (ok && f.length() > 0) playFile(f, lang, text) else fishFailed(code, lang, text)
+                }
+            }
+        }.start()
+    }
+
+    private fun playFile(f: File, lang: String, text: String) {
+        try {
+            try { player?.release() } catch (e: Exception) { }
+            val mp = MediaPlayer()
+            player = mp
+            mp.setDataSource(f.absolutePath)
+            mp.setOnPreparedListener { hud.active = true; it.start() }
+            mp.setOnCompletionListener { hud.active = false; afterSpeech() }
+            mp.setOnErrorListener { _, _, _ -> fishFailed(-2, lang, text); true }
+            mp.prepareAsync()
+        } catch (e: Exception) {
+            fishFailed(-2, lang, text)
+        }
+    }
+
+    private fun fishFailed(code: Int, lang: String, text: String) {
+        val why = when (code) {
+            401 -> "Fish Audio API Key ঠিক নয়"
+            402 -> "Fish Audio-র ক্রেডিট শেষ"
+            404, 422 -> "Reference ID বা মডেলে সমস্যা"
+            429 -> "Fish Audio-র সীমা শেষ"
+            else -> "ক্লোন ভয়েস কাজ করেনি"
+        }
+        note("($why, কোড $code। ফোনের ভয়েসে পড়ছি।)")
+        if (!speakIn(lang, text)) afterSpeech()
+    }
+
+    // ---------- ফোনের কাজ ----------
+    private fun isNumber(s: String): Boolean =
+        s.replace(" ", "").replace("-", "").matches(Regex("^\\+?[0-9]{5,15}$"))
+
+    private fun findNumber(q: String): String? {
+        if (isNumber(q)) return q.replace(" ", "").replace("-", "")
+        try {
+            val c = contentResolver.query(
+                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                arrayOf(ContactsContract.CommonDataKinds.Phone.NUMBER),
+                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + " LIKE ?",
+                arrayOf("%" + q + "%"),
+                null
+            )
+            c?.use { if (it.moveToFirst()) return it.getString(0) }
+        } catch (e: Exception) {
+        }
+        return null
+    }
+
+    private fun openApp(name: String): Boolean {
+        val pm = packageManager
+        val main = Intent(Intent.ACTION_MAIN)
+        main.addCategory(Intent.CATEGORY_LAUNCHER)
+        val apps = pm.queryIntentActivities(main, 0)
+        val q = name.lowercase()
+        for (a in apps) {
+            val label = a.loadLabel(pm).toString().lowercase()
+            if (label == q || label.contains(q) || q.contains(label)) {
+                val launch = pm.getLaunchIntentForPackage(a.activityInfo.packageName)
+                if (launch != null) {
+                    startActivity(launch)
+                    return true
+                }
+            }
+        }
+        note("“$name” নামে কোনো অ্যাপ খুঁজে পাইনি।")
+        return false
+    }
+
+    private fun setTorch(on: Boolean) {
+        val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        var id: String? = null
+        for (i in cm.cameraIdList) {
+            if (cm.getCameraCharacteristics(i).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true) {
+                id = i
+                break
+            }
+        }
+        if (id == null) {
+            note("এই ফোনে টর্চ পাওয়া যায়নি।")
+            return
+        }
+        cm.setTorchMode(id, on)
+        torchOn = on
+    }
+
+    // সত্য ফেরত দিলে বোঝায় অন্য অ্যাপ খুলেছে
+    private fun runAction(o: JSONObject): Boolean {
+        val a = o.optString("action", "none")
+        val arg = o.optString("arg", "").trim()
+        val arg2 = o.optString("arg2", "").trim()
+        try {
+            if ((a == "call_contact" || a == "sms") && !isNumber(arg) &&
+                checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+                pendingPerm = o
+                requestPermissions(arrayOf(Manifest.permission.READ_CONTACTS), 2)
+                return false
+            }
+            when (a) {
+                "open_app" -> return openApp(arg)
+                "dial" -> {
+                    startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + Uri.encode(arg))))
+                    return true
+                }
+                "call_contact" -> {
+                    val n = findNumber(arg)
+                    if (n == null) {
+                        note("“$arg” নামে কোনো কন্টাক্ট পাইনি। ফোনে নামটা কীভাবে সেভ আছে বলুন।")
+                        return false
+                    }
+                    startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + Uri.encode(n))))
+                    return true
+                }
+                "sms" -> {
+                    val n = findNumber(arg)
+                    if (n == null) {
+                        note("“$arg” নামে কোনো কন্টাক্ট বা নম্বর পাইনি।")
+                        return false
+                    }
+                    val i = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:" + Uri.encode(n)))
+                    i.putExtra("sms_body", arg2)
+                    startActivity(i)
+                    return true
+                }
+                "torch" -> {
+                    setTorch(arg.lowercase() != "off")
+                    return false
+                }
+                "alarm" -> {
+                    val parts = arg.split(":")
+                    val h = parts[0].trim().toInt()
+                    val m = if (parts.size > 1) parts[1].trim().toInt() else 0
+                    val i = Intent(AlarmClock.ACTION_SET_ALARM)
+                    i.putExtra(AlarmClock.EXTRA_HOUR, h)
+                    i.putExtra(AlarmClock.EXTRA_MINUTES, m)
+                    i.putExtra(AlarmClock.EXTRA_MESSAGE, if (arg2.isEmpty()) "Jarvis" else arg2)
+                    i.putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                    startActivity(i)
+                    return false
+                }
+                "timer" -> {
+                    val i = Intent(AlarmClock.ACTION_SET_TIMER)
+                    i.putExtra(AlarmClock.EXTRA_LENGTH, arg.toInt())
+                    i.putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                    startActivity(i)
+                    return false
+                }
+                "search" -> {
+                    val u = "https://www.google.com/search?q=" + URLEncoder.encode(arg, "UTF-8")
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(u)))
+                    return true
+                }
+                "youtube" -> {
+                    val u = "https://www.youtube.com/results?search_query=" + URLEncoder.encode(arg, "UTF-8")
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(u)))
+                    return true
+                }
+                "maps" -> {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=" + Uri.encode(arg))))
+                    return true
+                }
+            }
+        } catch (e: ActivityNotFoundException) {
+            note("এই কাজের জন্য ফোনে কোনো অ্যাপ পাওয়া যায়নি।")
+        } catch (e: Exception) {
+            note("কাজটা করা গেল না। (${e.javaClass.simpleName})")
+        }
+        return false
+    }
+
     // ---------- মাইক ----------
     private fun micTap() {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
@@ -586,7 +1182,18 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
 
     override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, res: IntArray) {
         super.onRequestPermissionsResult(code, perms, res)
-        if (res.isNotEmpty() && res[0] == PackageManager.PERMISSION_GRANTED) {
+        val granted = res.isNotEmpty() && res[0] == PackageManager.PERMISSION_GRANTED
+        if (code == 2) {
+            val p = pendingPerm
+            pendingPerm = null
+            if (granted && p != null) {
+                runAction(p)
+            } else {
+                note("কন্টাক্টের অনুমতি ছাড়া নাম দিয়ে খুঁজতে পারব না। নম্বর বললেও চলবে।")
+            }
+            return
+        }
+        if (granted) {
             listen()
         } else {
             chatMode = false
@@ -600,7 +1207,7 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
             status.text = "এই ফোনে ভয়েস চেনার সুবিধা নেই"
             return
         }
-        tts.stop()
+        stopVoice()
         recognizer?.destroy()
         recognizer = SpeechRecognizer.createSpeechRecognizer(this)
         recognizer?.setRecognitionListener(object : RecognitionListener {
@@ -691,15 +1298,14 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
 
     private fun askAi(userText: String) {
         val key = prefs().getString("key", "")?.trim().orEmpty()
+        addMsg(0, userText)
         if (key.isEmpty()) {
-            chatMode = false
-            hud.active = false
-            status.text = "আপনি বললেন: $userText\n\nAI চালাতে আগে মেনু → API Key-তে Key বসান।"
+            err("AI চালাতে আগে মেনু → API Key-তে Key বসান।")
             showKeyDialog()
             return
         }
         hud.active = true
-        status.text = "আপনি: $userText\n\nভাবছি…"
+        status.text = "ভাবছি…"
         val p = prefs()
         var name = p.getString("fullname", "").orEmpty()
         if (name.isEmpty()) name = p.getString("username", "").orEmpty()
@@ -744,54 +1350,60 @@ reply-তে মার্কডাউন, তারকা চিহ্ন বা
                         .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
                     val clean = out.replace("```json", "").replace("```", "").trim()
                     val j = try { JSONObject(clean) } catch (e: Exception) {
-                        JSONObject().put("lang", "bn").put("reply", out)
+                        JSONObject().put("lang", "bn").put("reply", out).put("action", "none")
                     }
                     val reply = j.optString("reply", out)
                     val lang = j.optString("lang", "bn")
+                    val action = j.optString("action", "none")
                     history.add(Pair("user", userText))
                     history.add(Pair("model", reply))
                     prefs().edit().putString("model", used).apply()
                     runOnUiThread {
-                        status.text = "আপনি: $userText\n\n$reply"
-                        if (!speakIn(lang, reply)) {
+                        status.text = ""
+                        if (reply.isNotBlank()) addMsg(1, reply)
+                        val hasAction = action.isNotEmpty() && action != "none"
+                        if (hasAction) pendingAction = j
+                        val spoke = reply.isNotBlank() && speakReply(lang, reply)
+                        if (!spoke) {
                             hud.active = false
+                            if (reply.isNotBlank()) {
+                                note("(এই ভাষার ভয়েস ফোনে নেই। Settings → Text-to-speech → Google Speech Services থেকে ডাউনলোড করুন।)")
+                            }
                             chatMode = false
-                            status.text = status.text.toString() + "\n\n(এই ভাষার ভয়েস ফোনে নেই। Settings → Text-to-speech → Google Speech Services থেকে ডাউনলোড করুন।)"
+                            val pa = pendingAction
+                            pendingAction = null
+                            if (pa != null) runAction(pa)
                         }
                     }
                 } else if (code == 404) {
                     prefs().edit().remove("model").apply()
                     val list = listModels(key)
                     runOnUiThread {
-                        chatMode = false
-                        hud.active = false
-                        status.text = "AI মডেল পাওয়া যায়নি (সার্ভার কোড 404)।\n\nআপনার Key যে মডেলগুলো ব্যবহার করতে পারে:\n$list\n\nএই তালিকার স্ক্রিনশট আমাকে পাঠান।"
+                        err("AI মডেল পাওয়া যায়নি (সার্ভার কোড 404)।\n\nআপনার Key যে মডেলগুলো ব্যবহার করতে পারে:\n$list\n\nএই তালিকার স্ক্রিনশট আমাকে পাঠান।")
                     }
                 } else {
                     runOnUiThread { showHttpError(code) }
                 }
             } catch (e: Exception) {
                 runOnUiThread {
-                    chatMode = false
-                    hud.active = false
-                    status.text = "ইন্টারনেট বা সংযোগে সমস্যা। নেট চালু আছে কি না দেখুন।\n(${e.javaClass.simpleName})"
+                    err("ইন্টারনেট বা সংযোগে সমস্যা। নেট চালু আছে কি না দেখুন।\n(${e.javaClass.simpleName})")
                 }
             }
         }.start()
     }
 
     private fun showHttpError(code: Int) {
-        chatMode = false
-        hud.active = false
-        status.text = when (code) {
+        val msg = when (code) {
             400, 403 -> "API Key ঠিক নয় বা অনুমতি নেই (সার্ভার কোড $code)। মেনু → API Key-তে আবার বসান।"
             429 -> "ফ্রি সীমা শেষ। কিছুক্ষণ পরে আবার চেষ্টা করুন (সার্ভার কোড 429)।"
             else -> "সার্ভারে সমস্যা হয়েছে (সার্ভার কোড $code)। আবার চেষ্টা করুন।"
         }
+        err(msg)
     }
 
     override fun onDestroy() {
         recognizer?.destroy()
+        try { player?.release() } catch (e: Exception) { }
         tts.shutdown()
         super.onDestroy()
     }
