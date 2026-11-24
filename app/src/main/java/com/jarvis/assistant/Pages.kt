@@ -21,7 +21,6 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import java.util.Date
 
 class ProfilePage(
     private val act: Activity,
@@ -98,7 +97,7 @@ class ProfilePage(
         col.setPadding(dp(24), dp(96), dp(24), dp(120))
 
         val tag = TextView(act)
-        tag.text = "> IDENTITY VERIFIED_"
+        tag.text = L.t("verified")
         tag.setTextColor(Color.parseColor("#39FF88"))
         tag.textSize = 12f
         mono(tag)
@@ -123,7 +122,7 @@ class ProfilePage(
         col.addView(holder, LinearLayout.LayoutParams(dp(150), dp(150)))
 
         val change = TextView(act)
-        change.text = "[ ছবি বদলান ]"
+        change.text = L.t("change_photo")
         change.setTextColor(Ui.CYAN)
         change.textSize = 14f
         mono(change)
@@ -132,15 +131,15 @@ class ProfilePage(
         Ui.quiet(change)
         col.addView(change)
 
-        fUser = field(col, "USERNAME", "username", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD)
-        fFull = field(col, "FULL NAME", "পুরো নাম", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS)
-        fMail = field(col, "GMAIL ID", "name@gmail.com", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS)
-        fPhone = field(col, "PHONE NUMBER", "+880...", InputType.TYPE_CLASS_PHONE)
+        fUser = field(col, L.t("f_user"), L.t("h_user"), InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD)
+        fFull = field(col, L.t("f_full"), L.t("h_full"), InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS)
+        fMail = field(col, L.t("f_mail"), L.t("h_mail"), InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS)
+        fPhone = field(col, L.t("f_phone"), L.t("h_phone"), InputType.TYPE_CLASS_PHONE)
 
-        val save = boxButton("SAVE", Ui.CYAN)
+        val save = boxButton(L.t("save"), Ui.CYAN)
         save.setOnClickListener {
             saveFields()
-            Toast.makeText(act, "সেভ হয়েছে", Toast.LENGTH_SHORT).show()
+            Toast.makeText(act, L.t("saved"), Toast.LENGTH_SHORT).show()
         }
         val saveLp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         saveLp.topMargin = dp(28)
@@ -151,30 +150,10 @@ class ProfilePage(
         sv.addView(col)
         root.addView(sv, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
-        val back = TextView(act)
-        back.text = "‹ BACK"
-        back.setTextColor(Ui.CYAN)
-        back.textSize = 16f
-        mono(back)
-        back.setPadding(dp(16), dp(10), dp(16), dp(10))
-        val bLp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START)
-        bLp.topMargin = dp(38)
-        back.setOnClickListener { close() }
-        Ui.quiet(back)
-        root.addView(back, bLp)
+        Bars.back(act, root) { close() }
+        Bars.title(act, root, L.t("profile"), Gravity.TOP or Gravity.END)
 
-        val head = TextView(act)
-        head.text = "// PROFILE"
-        head.setTextColor(Ui.CYAN)
-        head.textSize = 16f
-        head.letterSpacing = 0.2f
-        mono(head)
-        val hLp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END)
-        hLp.topMargin = dp(48)
-        hLp.rightMargin = dp(20)
-        root.addView(head, hLp)
-
-        val out = boxButton("⏻  LOG OUT", Ui.RED)
+        val out = boxButton("⏻  " + L.t("logout"), Ui.RED)
         out.setOnClickListener { confirmLogout() }
         val oLp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
         oLp.setMargins(dp(24), 0, dp(24), dp(28))
@@ -222,16 +201,16 @@ class ProfilePage(
 
     private fun confirmLogout() {
         AlertDialog.Builder(act, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("LOG OUT")
-            .setMessage("আপনার প্রোফাইলের তথ্য ও ছবি এই ফোন থেকে মুছে যাবে। (কথোপকথনের ইতিহাস, API Key ও ক্লোন ভয়েস সেটিং থাকবে।) নিশ্চিত?")
-            .setPositiveButton("হ্যাঁ, মুছুন") { _, _ ->
+            .setTitle(L.t("lo_title"))
+            .setMessage(L.t("lo_msg"))
+            .setPositiveButton(L.t("yes_del")) { _, _ ->
                 store.remove("username", "fullname", "email", "phone")
                 store.photoFile().delete()
                 load()
                 close()
-                Toast.makeText(act, "লগ আউট হয়েছে", Toast.LENGTH_SHORT).show()
+                Toast.makeText(act, L.t("logged_out"), Toast.LENGTH_SHORT).show()
             }
-            .setNegativeButton("না", null).show()
+            .setNegativeButton(L.t("no"), null).show()
     }
 
     fun setPhoto(uri: Uri) {
@@ -262,7 +241,7 @@ class ProfilePage(
             load()
             onChanged()
         } catch (e: Exception) {
-            Toast.makeText(act, "ছবিটা নেওয়া যায়নি", Toast.LENGTH_SHORT).show()
+            Toast.makeText(act, L.t("photo_fail"), Toast.LENGTH_SHORT).show()
         }
     }
 }
@@ -286,20 +265,10 @@ class HistoryPage(private val act: Activity, private val store: Store) {
         scroll.addView(box)
         root.addView(scroll, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
-        val back = TextView(act)
-        back.text = "‹ BACK"
-        back.setTextColor(Ui.CYAN)
-        back.textSize = 16f
-        back.typeface = Typeface.MONOSPACE
-        back.setPadding(dp(16), dp(10), dp(16), dp(10))
-        val bLp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START)
-        bLp.topMargin = dp(38)
-        back.setOnClickListener { close() }
-        Ui.quiet(back)
-        root.addView(back, bLp)
+        Bars.back(act, root) { close() }
 
         val head = TextView(act)
-        head.text = "// HISTORY"
+        head.text = "// " + L.t("hist_title")
         head.setTextColor(Ui.CYAN)
         head.textSize = 16f
         head.letterSpacing = 0.2f
@@ -309,22 +278,23 @@ class HistoryPage(private val act: Activity, private val store: Store) {
         root.addView(head, hLp)
 
         val del = TextView(act)
-        del.text = "🗑 মুছুন"
+        del.text = L.t("del")
         del.setTextColor(Ui.RED)
         del.textSize = 14f
+        del.typeface = Typeface.MONOSPACE
         del.setPadding(dp(16), dp(10), dp(16), dp(10))
         val dLp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END)
         dLp.topMargin = dp(40)
         del.setOnClickListener {
             AlertDialog.Builder(act, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                .setTitle("ইতিহাস মুছুন")
-                .setMessage("সব সেভ করা কথোপকথন চিরতরে মুছে যাবে। নিশ্চিত?")
-                .setPositiveButton("হ্যাঁ, মুছুন") { _, _ ->
+                .setTitle(L.t("hist_del_title"))
+                .setMessage(L.t("hist_del_msg"))
+                .setPositiveButton(L.t("yes_del")) { _, _ ->
                     store.clearHistory()
                     fill()
-                    Toast.makeText(act, "ইতিহাস মুছে ফেলা হয়েছে", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(act, L.t("hist_deleted"), Toast.LENGTH_SHORT).show()
                 }
-                .setNegativeButton("না", null).show()
+                .setNegativeButton(L.t("no"), null).show()
         }
         Ui.quiet(del)
         root.addView(del, dLp)
@@ -335,7 +305,7 @@ class HistoryPage(private val act: Activity, private val store: Store) {
         var all = store.loadMsgs()
         if (all.isEmpty()) {
             val e = TextView(act)
-            e.text = "এখনও কোনো কথোপকথন সেভ হয়নি।"
+            e.text = L.t("hist_empty")
             e.setTextColor(Ui.SOFT)
             e.textSize = 15f
             e.gravity = Gravity.CENTER
@@ -346,7 +316,7 @@ class HistoryPage(private val act: Activity, private val store: Store) {
         if (all.size > 500) {
             all = all.takeLast(500)
             val m = TextView(act)
-            m.text = "সর্বশেষ ৫০০টা বার্তা দেখানো হচ্ছে"
+            m.text = L.t("hist_cap")
             m.setTextColor(Ui.MUTED)
             m.textSize = 11f
             m.gravity = Gravity.CENTER
@@ -354,7 +324,7 @@ class HistoryPage(private val act: Activity, private val store: Store) {
         }
         var lastDay = ""
         for (x in all) {
-            val day = Ui.dateFmt.format(Date(x.third))
+            val day = L.date(x.third)
             if (day != lastDay) {
                 lastDay = day
                 val h = TextView(act)
