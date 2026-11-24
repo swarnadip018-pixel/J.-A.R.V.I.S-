@@ -6,10 +6,14 @@ import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ShortcutInfo
+import android.content.pm.ShortcutManager
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.Icon
 import android.media.AudioManager
 import android.media.MediaPlayer
 import android.net.Uri
@@ -29,15 +33,18 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import org.json.JSONObject
 import java.io.File
 import java.util.Locale
+import kotlin.math.min
 
 class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private lateinit var store: Store
     private lateinit var phone: PhoneActions
     private lateinit var profile: ProfilePage
     private lateinit var historyPage: HistoryPage
+    private lateinit var settings: SettingsPage
     private lateinit var tts: TextToSpeech
     private lateinit var status: TextView
     private lateinit var hud: HudView
@@ -59,12 +66,14 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private var liveUser: ChatUi.Msg? = null
     private val mutedStreams = ArrayList<Int>()
     private val PICK_PHOTO = 77
+    private val PICK_ICON = 78
 
     private fun dp(v: Int) = Ui.dp(this, v)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         store = Store(this)
+        L.bn = store.str("ui_lang") == "bn"
         phone = PhoneActions(this) { addSystem(it) }
         window.statusBarColor = Ui.BG
         window.navigationBarColor = Ui.BG
@@ -103,7 +112,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         hudLp.setMargins(dp(76), dp(16), dp(76), 0)
         hud.setOnClickListener {
             if (chatMode) {
-                stopChat("কথোপকথন বন্ধ। আবার শুরু করতে গোলকে চাপুন।")
+                stopChat(L.t("stopped"))
             } else {
                 chatMode = true
                 silent = 0
@@ -113,7 +122,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         hud.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> updateFocus() }
 
         status = TextView(this)
-        status.text = "গোলকে একবার চাপুন, তারপর স্বাভাবিকভাবে কথা বলুন।"
+        status.text = L.t("hint")
         status.textSize = 13f
         status.setTextColor(Ui.SOFT)
         status.setShadowLayer(6f, 0f, 0f, Color.BLACK)
@@ -187,6 +196,16 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         root.addView(profile.root, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         historyPage = HistoryPage(this, store)
         root.addView(historyPage.root, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        settings = SettingsPage(this, store, SettingsActions(
+            key = { Dialogs.key(this, store) },
+            engine = { Dialogs.engine(this, store) { settings.refresh() } },
+            voiceApi = { Dialogs.fish(this, store) },
+            gemini = { Dialogs.geminiVoice(this, store) },
+            access = { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
+            lang = { Dialogs.appLang(this, store) { recreate() } },
+            icon = { Dialogs.iconInfo(this) { pickIcon() } }
+        ))
+        root.addView(settings.root, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         setContentView(root)
         refreshAvatar()
@@ -214,59 +233,95 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
     }
 
+    // ---------- ছবি বাছা (প্রোফাইল ও অ্যাপ আইকন) ----------
     private fun pickPhoto() {
         val i = Intent(Intent.ACTION_GET_CONTENT)
         i.type = "image/*"
-        startActivityForResult(Intent.createChooser(i, "ছবি বাছুন"), PICK_PHOTO)
+        startActivityForResult(Intent.createChooser(i, L.t("choose_photo")), PICK_PHOTO)
+    }
+
+    private fun pickIcon() {
+        val i = Intent(Intent.ACTION_GET_CONTENT)
+        i.type = "image/*"
+        startActivityForResult(Intent.createChooser(i, L.t("choose_photo")), PICK_ICON)
     }
 
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(req: Int, res: Int, data: Intent?) {
         super.onActivityResult(req, res, data)
-        if (req == PICK_PHOTO && res == RESULT_OK && data?.data != null) {
-            profile.setPhoto(data.data!!)
+        if (res != RESULT_OK || data?.data == null) return
+        if (req == PICK_PHOTO) profile.setPhoto(data.data!!)
+        if (req == PICK_ICON) makeShortcut(data.data!!)
+    }
+
+    private fun makeShortcut(uri: Uri) {
+        try {
+            val sm = getSystemService(ShortcutManager::class.java)
+            if (sm == null || !sm.isRequestPinShortcutSupported) {
+                addSystem(L.t("ic_unsupported"))
+                return
+            }
+            val bounds = BitmapFactory.Options()
+            bounds.inJustDecodeBounds = true
+            contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+            var s = 1
+            while (bounds.outWidth / s > 1024 || bounds.outHeight / s > 1024) s *= 2
+            val opts = BitmapFactory.Options()
+            opts.inSampleSize = s
+            val bmp = contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
+            if (bmp == null) {
+                addSystem(L.t("ic_fail"))
+                return
+            }
+            val side = min(bmp.width, bmp.height)
+            val sq = Bitmap.createBitmap(bmp, (bmp.width - side) / 2, (bmp.height - side) / 2, side, side)
+            val icon = Bitmap.createScaledBitmap(sq, 432, 432, true)
+            val launch = Intent(this, MainActivity::class.java)
+            launch.action = Intent.ACTION_MAIN
+            val info = ShortcutInfo.Builder(this, "jarvis_" + System.currentTimeMillis())
+                .setShortLabel("Jarvis")
+                .setIcon(Icon.createWithAdaptiveBitmap(icon))
+                .setIntent(launch)
+                .build()
+            sm.requestPinShortcut(info, null)
+            Toast.makeText(this, L.t("ic_ok"), Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            addSystem(L.t("ic_fail"))
         }
     }
 
     // ---------- মেনু ----------
     private fun buildDrawer() {
         val head = TextView(this)
-        head.text = "মেনু"
+        head.text = L.t("menu")
         head.textSize = 22f
         head.setTextColor(Ui.CYAN)
-        head.setPadding(0, 0, 0, dp(16))
+        head.setPadding(0, 0, 0, dp(12))
         drawer.addView(head)
 
-        item("🕘", "কথোপকথনের ইতিহাস") { historyPage.open() }
-        item("✨", "নতুন কথোপকথন") {
+        drawerItem(IconView.NEW_CHAT, L.t("new_chat")) {
             ctxHist.clear()
             chatBox.removeAllViews()
-            status.text = "নতুন কথোপকথন শুরু। গোলকে চাপুন।"
+            status.text = L.t("new_started")
         }
-        item("🌐", "শোনার ভাষা") { Dialogs.lang(this, store) }
-        item("🔊", "ক্লোন ভয়েস (Fish Audio)") { Dialogs.fish(this, store) }
-        item("🔑", "API Key") { Dialogs.key(this, store) }
-        item("🔒", "অনুমতি") {
-            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
-        }
-        item("ℹ️", "অ্যাপ সম্পর্কে") {
+        drawerItem(IconView.HISTORY, L.t("history")) { historyPage.open() }
+        drawerItem(IconView.MIC, L.t("listen_lang")) { Dialogs.listenLang(this, store) }
+        drawerItem(IconView.ABOUT, L.t("about")) {
             val m = store.str("model")
             AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                 .setTitle("J.A.R.V.I.S")
-                .setMessage("আপনার ব্যক্তিগত সহকারী\nসংস্করণ 2.7\nAI মডেল: " + (if (m.isEmpty()) "এখনও বাছা হয়নি" else m))
-                .setPositiveButton("ঠিক আছে", null).show()
+                .setMessage(L.f("about_msg", if (m.isEmpty()) L.t("about_none") else m))
+                .setPositiveButton(L.t("ok"), null).show()
         }
+        drawer.addView(Rows.divider(this))
+        drawerItem(IconView.GEAR, L.t("settings")) { settings.open() }
     }
 
-    private fun item(icon: String, label: String, onTap: () -> Unit) {
-        val t = TextView(this)
-        t.text = "$icon   $label"
-        t.textSize = 17f
-        t.setTextColor(Color.WHITE)
-        t.setPadding(0, dp(14), 0, dp(14))
-        Ui.quiet(t)
-        t.setOnClickListener { closeDrawer(); onTap() }
-        drawer.addView(t)
+    private fun drawerItem(icon: Int, label: String, onTap: () -> Unit) {
+        drawer.addView(Rows.row(this, icon, label, null) {
+            closeDrawer()
+            onTap()
+        })
     }
 
     private fun openDrawer() {
@@ -283,6 +338,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         when {
             historyPage.isOpen -> historyPage.close()
             profile.isOpen -> profile.close()
+            settings.isOpen -> settings.close()
             scrim.visibility == View.VISIBLE -> closeDrawer()
             else -> super.onBackPressed()
         }
@@ -365,11 +421,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     override fun onPause() {
         unmuteBeep()
-        if (chatMode) stopChat("কথোপকথন বন্ধ। আবার শুরু করতে গোলকে চাপুন।")
+        if (chatMode) stopChat(L.t("stopped"))
         super.onPause()
     }
 
-    // মাইক চালুর বিপ শব্দ চুপ করার চেষ্টা
     private fun muteBeep() {
         if (mutedStreams.isNotEmpty()) return
         val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -460,23 +515,35 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     }
 
     private fun speakReply(lang: String, text: String): Boolean {
-        val fk = store.str("fish_key").trim()
-        val fid = store.str("fish_id").trim()
-        if (fk.isNotEmpty() && fid.isNotEmpty() && store.flag("fish_on", true)) {
-            speakFish(lang, text, fk, fid)
-            return true
+        when (voiceEngine(store)) {
+            "fish" -> {
+                val fk = store.str("fish_key").trim()
+                val fid = store.str("fish_id").trim()
+                if (fk.isNotEmpty() && fid.isNotEmpty()) {
+                    speakCloud(lang, text, File(cacheDir, "jarvis_voice.mp3")) { f -> FishVoice.fetch(fk, fid, text, f) }
+                    return true
+                }
+            }
+            "gemini" -> {
+                val key = store.str("key").trim()
+                if (key.isNotEmpty()) {
+                    val voice = store.str("gem_voice").ifEmpty { "Charon" }
+                    val style = store.str("gem_style").ifEmpty { "calm, deep and composed" }
+                    speakCloud(lang, text, File(cacheDir, "jarvis_voice.wav")) { f -> GeminiVoice.fetch(key, voice, style, text, f) }
+                    return true
+                }
+            }
         }
         return speakIn(lang, text)
     }
 
-    private fun speakFish(lang: String, text: String, fk: String, fid: String) {
+    private fun speakCloud(lang: String, text: String, file: File, fetch: (File) -> Int) {
         val gen = voiceGen
         Thread {
-            val f = File(cacheDir, "jarvis_voice.mp3")
-            val code = FishVoice.fetch(fk, fid, text, f)
+            val code = fetch(file)
             runOnUiThread {
                 if (gen == voiceGen) {
-                    if (code in 200..299 && f.length() > 0) playFile(f, lang, text) else fishFailed(code, lang, text)
+                    if (code in 200..299 && file.length() > 0) playFile(file, lang, text) else voiceFailed(code, lang, text)
                 }
             }
         }.start()
@@ -490,22 +557,26 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             mp.setDataSource(f.absolutePath)
             mp.setOnPreparedListener { hud.active = true; it.start() }
             mp.setOnCompletionListener { hud.active = false; afterSpeech() }
-            mp.setOnErrorListener { _, _, _ -> fishFailed(-2, lang, text); true }
+            mp.setOnErrorListener { _, _, _ -> voiceFailed(-2, lang, text); true }
             mp.prepareAsync()
         } catch (e: Exception) {
-            fishFailed(-2, lang, text)
+            voiceFailed(-2, lang, text)
         }
     }
 
-    private fun fishFailed(code: Int, lang: String, text: String) {
-        val why = when (code) {
-            401 -> "Fish Audio API Key ঠিক নয়"
-            402 -> "Fish Audio-র ক্রেডিট শেষ"
-            404, 422 -> "Reference ID বা মডেলে সমস্যা"
-            429 -> "Fish Audio-র সীমা শেষ"
-            else -> "ক্লোন ভয়েস কাজ করেনি"
+    private fun voiceFailed(code: Int, lang: String, text: String) {
+        val why = if (voiceEngine(store) == "gemini") {
+            L.t("gem_fail")
+        } else {
+            when (code) {
+                401 -> L.t("fish_key_bad")
+                402 -> L.t("fish_credit")
+                404, 422 -> L.t("fish_id")
+                429 -> L.t("fish_limit")
+                else -> L.t("fish_fail")
+            }
         }
-        addSystem("($why, কোড $code। ফোনের ভয়েসে পড়ছি।)")
+        addSystem(L.f("voice_fallback", why, code))
         if (!speakIn(lang, text)) afterSpeech()
     }
 
@@ -527,7 +598,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             if (granted && p != null) {
                 phone.run(p)
             } else {
-                addSystem("কন্টাক্টের অনুমতি ছাড়া নাম দিয়ে খুঁজতে পারব না। নম্বর বললেও চলবে।")
+                addSystem(L.t("c_denied"))
             }
             return
         }
@@ -535,14 +606,14 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             listen()
         } else {
             chatMode = false
-            status.text = "মাইকের অনুমতি ছাড়া শুনতে পারব না"
+            status.text = L.t("mic_denied")
         }
     }
 
     private fun listen() {
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
             chatMode = false
-            status.text = "এই ফোনে ভয়েস চেনার সুবিধা নেই"
+            status.text = L.t("no_recog")
             return
         }
         stopVoice()
@@ -573,18 +644,18 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 if (chatMode && quiet) {
                     silent++
                     if (silent >= 3) {
-                        stopChat("অনেকক্ষণ কিছু শুনিনি, কথোপকথন বন্ধ করলাম। আবার শুরু করতে গোলকে চাপুন।")
+                        stopChat(L.t("long_silence"))
                     } else {
                         hud.postDelayed({ if (chatMode) listen() }, 300)
                     }
                 } else {
                     chatMode = false
-                    status.text = "মাইক বুঝতে পারেনি, আবার গোলকে চেপে বলুন (মাইক এরর কোড $e)"
+                    status.text = L.f("mic_err", e)
                 }
             }
             override fun onReadyForSpeech(p: Bundle?) {
                 hud.active = true
-                status.text = if (chatMode) "শুনছি… (বন্ধ করতে গোলকে চাপুন)" else "শুনছি…"
+                status.text = if (chatMode) L.t("listening_stop") else L.t("listening")
                 hud.postDelayed({ unmuteBeep() }, 250)
             }
             override fun onBeginningOfSpeech() {}
@@ -609,15 +680,15 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun askAi(userText: String) {
         val key = store.str("key").trim()
         if (key.isEmpty()) {
-            err("AI চালাতে আগে মেনু → API Key-তে Key বসান।")
+            err(L.t("need_key"))
             Dialogs.key(this, store)
             return
         }
         hud.active = true
-        status.text = "ভাবছি…"
+        status.text = L.t("thinking")
         var name = store.str("fullname")
         if (name.isEmpty()) name = store.str("username")
-        val sys = if (name.isEmpty()) Ai.SYS else Ai.SYS + "\nব্যবহারকারীর নাম: " + name
+        val sys = if (name.isEmpty()) Prompt.SYS else Prompt.SYS + "\nThe user's name: " + name
         val hist = ArrayList(ctxHist)
         val savedModel = store.str("model")
         val savedThink = store.str("think")
@@ -644,9 +715,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             val spoke = reply.isNotBlank() && speakReply(lang, reply)
             if (!spoke) {
                 hud.active = false
-                if (reply.isNotBlank()) {
-                    addSystem("(এই ভাষার ভয়েস ফোনে নেই। Settings → Text-to-speech → Google Speech Services থেকে ডাউনলোড করুন।)")
-                }
+                if (reply.isNotBlank()) addSystem(L.t("no_voice"))
                 chatMode = false
                 val pa = pendingAction
                 pendingAction = null
@@ -655,12 +724,12 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             return
         }
         when (r.code) {
-            404 -> err("AI মডেল পাওয়া যায়নি (সার্ভার কোড 404)।\n\nআপনার Key যে মডেলগুলো ব্যবহার করতে পারে:\n${r.modelList}\n\nএই তালিকার স্ক্রিনশট আমাকে পাঠান।")
-            400, 403 -> err("API Key ঠিক নয় বা অনুমতি নেই (সার্ভার কোড ${r.code})। মেনু → API Key-তে আবার বসান।")
-            429 -> err("ফ্রি সীমা শেষ। কিছুক্ষণ পরে আবার চেষ্টা করুন (সার্ভার কোড 429)।")
-            -1 -> err("ইন্টারনেট বা সংযোগে সমস্যা। নেট চালু আছে কি না দেখুন।\n(${r.ex})")
-            -2 -> err("AI-র উত্তর বুঝতে পারিনি। আবার বলুন।")
-            else -> err("সার্ভারে সমস্যা হয়েছে (সার্ভার কোড ${r.code})। আবার চেষ্টা করুন।")
+            404 -> err(L.f("err_404", r.modelList))
+            400, 403 -> err(L.f("err_key", r.code))
+            429 -> err(L.t("err_quota"))
+            -1 -> err(L.f("err_net", r.ex))
+            -2 -> err(L.t("err_parse"))
+            else -> err(L.f("err_server", r.code))
         }
     }
 
