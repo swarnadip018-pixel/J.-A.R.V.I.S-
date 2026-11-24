@@ -1,4 +1,4 @@
-package com.jarvis.assistant
+mpackage com.jarvis.assistant
 
 import android.content.Context
 import android.graphics.Color
@@ -74,7 +74,7 @@ object ChatUi {
 
         if (showTime && role != 2) {
             val time = TextView(ctx)
-            time.text = Ui.timeFmt.format(Date(ts))
+                        time.text = L.time(ts)
             time.textSize = 10f
             time.setTextColor(Ui.MUTED)
             time.setShadowLayer(6f, 0f, 0f, Color.BLACK)
