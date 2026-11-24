@@ -51,7 +51,7 @@ class PhoneActions(private val act: Activity, private val note: (String) -> Unit
                 }
             }
         }
-        note("“$name” নামে কোনো অ্যাপ খুঁজে পাইনি।")
+        note(L.f("app_none", name))
         return false
     }
 
@@ -65,7 +65,7 @@ class PhoneActions(private val act: Activity, private val note: (String) -> Unit
             }
         }
         if (id == null) {
-            note("এই ফোনে টর্চ পাওয়া যায়নি।")
+            note(L.t("no_torch"))
             return
         }
         cm.setTorchMode(id, on)
@@ -90,7 +90,7 @@ class PhoneActions(private val act: Activity, private val note: (String) -> Unit
                 "call_contact" -> {
                     val n = findNumber(arg)
                     if (n == null) {
-                        note("“$arg” নামে কোনো কন্টাক্ট পাইনি। ফোনে নামটা কীভাবে সেভ আছে বলুন।")
+                        note(L.f("c_none", arg))
                         return 0
                     }
                     act.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + Uri.encode(n))))
@@ -99,7 +99,7 @@ class PhoneActions(private val act: Activity, private val note: (String) -> Unit
                 "sms" -> {
                     val n = findNumber(arg)
                     if (n == null) {
-                        note("“$arg” নামে কোনো কন্টাক্ট বা নম্বর পাইনি।")
+                        note(L.f("c_none", arg))
                         return 0
                     }
                     val i = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:" + Uri.encode(n)))
@@ -146,9 +146,9 @@ class PhoneActions(private val act: Activity, private val note: (String) -> Unit
                 }
             }
         } catch (e: ActivityNotFoundException) {
-            note("এই কাজের জন্য ফোনে কোনো অ্যাপ পাওয়া যায়নি।")
+            note(L.t("no_app"))
         } catch (e: Exception) {
-            note("কাজটা করা গেল না। (${e.javaClass.simpleName})")
+            note(L.f("act_fail", e.javaClass.simpleName))
         }
         return 0
     }
