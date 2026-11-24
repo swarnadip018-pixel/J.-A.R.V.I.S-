@@ -3,8 +3,12 @@ package com.jarvis.assistant
 import android.app.Activity
 import android.app.AlertDialog
 import android.graphics.Color
+import android.view.View
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.RadioButton
+import android.widget.RadioGroup
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 
@@ -28,9 +32,10 @@ object Dialogs {
         return v
     }
 
-    private fun input(act: Activity, hint: String): EditText {
+    private fun input(act: Activity, hint: String, value: String): EditText {
         val e = EditText(act)
         e.hint = hint
+        e.setText(value)
         e.setSingleLine(true)
         e.setTextColor(Color.WHITE)
         e.setHintTextColor(Color.GRAY)
@@ -39,58 +44,119 @@ object Dialogs {
 
     fun key(act: Activity, store: Store) {
         val b = box(act)
-        val key = input(act, "AQ... বা AIza...")
-        b.addView(info(act, "aistudio.google.com থেকে নেওয়া Gemini API Key এখানে পেস্ট করুন। এটা শুধু আপনার ফোনে থাকবে।"))
+        val key = input(act, L.t("key_hint"), "")
+        b.addView(info(act, L.t("key_info")))
         b.addView(key)
         val has = store.str("key").isNotEmpty()
-        dark(act).setTitle(if (has) "🔑 API Key (আগেরটা সেভ আছে)" else "🔑 API Key").setView(b)
-            .setPositiveButton("সেভ") { _, _ ->
+        dark(act).setTitle(if (has) L.t("key_title_has") else L.t("key_title")).setView(b)
+            .setPositiveButton(L.t("dlg_save")) { _, _ ->
                 val k = key.text.toString().trim()
                 if (k.isNotEmpty()) {
                     store.put("key", k)
                     store.remove("model", "think")
-                    toast(act, "Key সেভ হয়েছে")
+                    toast(act, L.t("key_saved"))
                 }
             }
-            .setNegativeButton("বন্ধ", null).show()
+            .setNegativeButton(L.t("dlg_close"), null).show()
     }
 
     fun fish(act: Activity, store: Store) {
         val b = box(act)
-        val k = input(act, "Fish Audio API Key")
-        val id = input(act, "Reference ID")
-        b.addView(info(act, "Fish Audio-র API Key ও ক্লোন ভয়েসের Reference ID বসান। উত্তরের লেখা Fish Audio-র সার্ভারে যাবে। শুধু নিজের বা অনুমতি পাওয়া কণ্ঠ ব্যবহার করুন।"))
+        val k = input(act, L.t("fish_key_hint"), "")
+        val id = input(act, L.t("fish_id_hint"), store.str("fish_id"))
+        b.addView(info(act, L.t("fish_info")))
         b.addView(k)
         b.addView(id)
-        val has = store.str("fish_key").isNotEmpty() && store.str("fish_id").isNotEmpty()
-        val on = store.flag("fish_on", true)
-        val title = if (has) (if (on) "🔊 ক্লোন ভয়েস (চালু)" else "🔊 ক্লোন ভয়েস (বন্ধ)") else "🔊 ক্লোন ভয়েস"
-        val d = dark(act).setTitle(title).setView(b)
-            .setPositiveButton("সেভ ও চালু") { _, _ ->
+        dark(act).setTitle(L.t("fish_title")).setView(b)
+            .setPositiveButton(L.t("dlg_save")) { _, _ ->
                 val kk = k.text.toString().trim()
                 val ii = id.text.toString().trim()
                 if (kk.isNotEmpty()) store.put("fish_key", kk)
                 if (ii.isNotEmpty()) store.put("fish_id", ii)
-                store.putFlag("fish_on", true)
-                toast(act, "সেভ হয়েছে। এবার জার্ভিসকে কিছু জিজ্ঞেস করুন।")
+                toast(act, L.t("fish_saved"))
             }
-            .setNegativeButton("বন্ধ", null)
-        if (has) {
-            d.setNeutralButton(if (on) "ক্লোন বন্ধ করুন" else "ক্লোন চালু করুন") { _, _ ->
-                store.putFlag("fish_on", !on)
-                toast(act, if (on) "ফোনের সাধারণ ভয়েসে ফিরলাম" else "ক্লোন ভয়েস চালু")
-            }
-        }
-        d.show()
+            .setNegativeButton(L.t("dlg_close"), null).show()
     }
 
-    fun lang(act: Activity, store: Store) {
+    fun engine(act: Activity, store: Store, onChanged: () -> Unit) {
+        val ids = arrayOf("phone", "gemini", "fish")
+        val names = arrayOf(L.t("eng_phone"), L.t("eng_gemini"), L.t("eng_fish"))
+        val short = arrayOf(L.t("eng_n_phone"), L.t("eng_n_gemini"), L.t("eng_n_fish"))
+        val cur = ids.indexOf(voiceEngine(store))
+        dark(act).setTitle(L.t("eng_title"))
+            .setSingleChoiceItems(names, cur) { d, i ->
+                store.put("engine", ids[i])
+                d.dismiss()
+                onChanged()
+                toast(act, L.f("eng_set", short[i]))
+            }
+            .setNegativeButton(L.t("dlg_close"), null).show()
+    }
+
+    fun geminiVoice(act: Activity, store: Store) {
+        val voices = listOf(
+            "Charon" to "Informative", "Orus" to "Firm", "Algenib" to "Gravelly",
+            "Iapetus" to "Clear", "Kore" to "Firm", "Puck" to "Upbeat",
+            "Fenrir" to "Excitable", "Aoede" to "Breezy", "Sulafat" to "Warm", "Achird" to "Friendly"
+        )
+        val cur = store.str("gem_voice").ifEmpty { "Charon" }
+        val b = box(act)
+        b.addView(info(act, L.t("gem_info")))
+        val rg = RadioGroup(act)
+        rg.orientation = RadioGroup.VERTICAL
+        for (v in voices) {
+            val rb = RadioButton(act)
+            rb.id = View.generateViewId()
+            rb.tag = v.first
+            rb.text = v.first + " — " + v.second
+            rb.setTextColor(Color.WHITE)
+            rg.addView(rb)
+            if (v.first == cur) rb.isChecked = true
+        }
+        b.addView(rg)
+        val label = info(act, L.t("gem_style"))
+        label.setPadding(0, Ui.dp(act, 14), 0, 0)
+        b.addView(label)
+        val style = input(act, "", store.str("gem_style").ifEmpty { "calm, deep and composed" })
+        b.addView(style)
+        val sv = ScrollView(act)
+        sv.addView(b)
+        dark(act).setTitle(L.t("gem_title")).setView(sv)
+            .setPositiveButton(L.t("dlg_save")) { _, _ ->
+                val sel = rg.findViewById<RadioButton>(rg.checkedRadioButtonId)
+                val name = (sel?.tag as? String) ?: "Charon"
+                store.put("gem_voice", name)
+                val st = style.text.toString().trim()
+                store.put("gem_style", if (st.isEmpty()) "calm, deep and composed" else st)
+                toast(act, L.t("gem_saved"))
+            }
+            .setNegativeButton(L.t("dlg_close"), null).show()
+    }
+
+    fun listenLang(act: Activity, store: Store) {
         val names = arrayOf("বাংলা", "English", "हिन्दी")
         val codes = arrayOf("bn-BD", "en-US", "hi-IN")
-        dark(act).setTitle("🌐 আপনি কোন ভাষায় কথা বলবেন?")
+        dark(act).setTitle(L.t("ll_title"))
             .setItems(names) { _, i ->
                 store.put("inlang", codes[i])
-                toast(act, "শোনার ভাষা: ${names[i]}")
+                toast(act, L.f("ll_set", names[i]))
             }.show()
+    }
+
+    fun appLang(act: Activity, store: Store, onChanged: () -> Unit) {
+        val names = arrayOf("English", "বাংলা")
+        val codes = arrayOf("en", "bn")
+        dark(act).setTitle(L.t("al_title"))
+            .setItems(names) { _, i ->
+                store.put("ui_lang", codes[i])
+                L.bn = codes[i] == "bn"
+                onChanged()
+            }.show()
+    }
+
+    fun iconInfo(act: Activity, onPick: () -> Unit) {
+        dark(act).setTitle(L.t("ic_title")).setMessage(L.t("ic_msg"))
+            .setPositiveButton(L.t("ic_pick")) { _, _ -> onPick() }
+            .setNegativeButton(L.t("ic_cancel"), null).show()
     }
 }
