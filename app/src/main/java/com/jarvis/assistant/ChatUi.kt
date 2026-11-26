@@ -1,4 +1,4 @@
-mpackage com.jarvis.assistant
+package com.jarvis.assistant
 
 import android.content.Context
 import android.graphics.Color
@@ -10,9 +10,6 @@ import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
 import java.text.BreakIterator
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 object Ui {
     val BG = Color.parseColor("#050B12")
@@ -21,8 +18,6 @@ object Ui {
     val PANEL = Color.parseColor("#0A1A24")
     val RED = Color.parseColor("#FF4D4D")
     val MUTED = Color.parseColor("#7C97A3")
-    val timeFmt = SimpleDateFormat("hh:mm a", Locale.getDefault())
-    val dateFmt = SimpleDateFormat("d MMMM yyyy, EEEE", Locale.getDefault())
 
     fun dp(ctx: Context, v: Int): Int = (v * ctx.resources.displayMetrics.density).toInt()
 
@@ -74,7 +69,7 @@ object ChatUi {
 
         if (showTime && role != 2) {
             val time = TextView(ctx)
-                        time.text = L.time(ts)
+            time.text = L.time(ts)
             time.textSize = 10f
             time.setTextColor(Ui.MUTED)
             time.setShadowLayer(6f, 0f, 0f, Color.BLACK)
